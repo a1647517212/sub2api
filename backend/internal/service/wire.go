@@ -233,6 +233,7 @@ func ProvideAccountUsageService(
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
+	cfg *config.Config,
 ) *AccountUsageService {
 	service := NewAccountUsageService(
 		accountRepo,
@@ -246,6 +247,7 @@ func ProvideAccountUsageService(
 		cache,
 		identityCache,
 		tlsFPProfileService,
+		cfg,
 	)
 	return service
 }
