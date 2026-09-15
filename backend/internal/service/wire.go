@@ -183,17 +183,16 @@ func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg 
 }
 
 // ProvideOpenAIQuotaService wires the OpenAI quota query/reset service.
-// It depends on the OpenAI token provider for refreshed access tokens and the
-// privacy client factory for the impersonated upstream HTTP client.
+// 额度面使用 Codex 后端客户端，不走浏览器伪装；推荐邀请客户端仍用上游的 privacy 工厂。
 func ProvideOpenAIQuotaService(
 	accountRepo AccountRepository,
 	proxyRepo ProxyRepository,
 	tokenProvider *OpenAITokenProvider,
-	privacyClientFactory PrivacyClientFactory,
+	codexBackendClientFactory CodexBackendClientFactory,
 	referralClient OpenAIReferralClient,
 	openAIGatewayService *OpenAIGatewayService,
 ) *OpenAIQuotaService {
-	service := NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory, referralClient)
+	service := NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, PrivacyClientFactory(codexBackendClientFactory), referralClient)
 	service.agentIdentityWS = openAIGatewayService
 	return service
 }
@@ -248,7 +247,6 @@ func ProvideAccountUsageService(
 		identityCache,
 		tlsFPProfileService,
 	)
-	service.agentIdentityWS = openAIGatewayService
 	return service
 }
 
