@@ -776,6 +776,7 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 		TurnState:               l.TurnState,
 		TurnStateOverridden:     l.TurnStateOverridden,
 		TurnStateSource:         l.TurnStateSource,
+		TurnStateSent:           l.TurnStateSent,
 		BillingTier:             l.BillingTier,
 		AccountRateMultiplier:   l.AccountRateMultiplier,
 		AccountStatsCost:        l.AccountStatsCost,
