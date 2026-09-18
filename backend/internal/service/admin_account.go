@@ -712,6 +712,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, openAITurnStatePoolExtraKey)
 		// 猎手运行态同理：小时计数、退避、出口冷却都在网关侧维护，快照回写会把它们全部倒回。
 		delete(normalizedExtra, openAITurnStateHuntExtraKey)
+		// 形态观测也是网关写的运行态：快照回写会把「最近铸出」倒回打开弹窗那一刻。
+		delete(normalizedExtra, openAITurnStateObservedExtraKey)
 		// 保留配额用量和专用服务受管字段，防止普通账号编辑意外覆盖。
 		for _, key := range []string{
 			"quota_used",
@@ -731,6 +733,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OpenCodeGoUsageSnapshotExtraKey,
 			openAITurnStatePoolExtraKey,
 			openAITurnStateHuntExtraKey,
+			openAITurnStateObservedExtraKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
@@ -965,6 +968,10 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OllamaCloudUsageSnapshotExtraKey)
 	delete(updates, OpenCodeGoUsageAutoRefreshExtraKey)
 	delete(updates, OpenCodeGoUsageSnapshotExtraKey)
+	// turn-state 运行态只由网关/猎手维护，避免重授权把别的账号的候选池写进来。
+	delete(updates, openAITurnStatePoolExtraKey)
+	delete(updates, openAITurnStateHuntExtraKey)
+	delete(updates, openAITurnStateObservedExtraKey)
 	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -978,6 +985,29 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 		return nil
 	}
 	return s.accountRepo.UpdateExtra(ctx, id, updates)
+}
+
+// ClearOpenAITurnStateRuntimeExtra 清掉 turn-state 的三个运行态键（写成 jsonb null，读侧按空处理）。
+// 重授权换了 ChatGPT 账号时用：旧账号铸的票对新凭据是跨凭证域回放，注进去只会换回 400，
+// 把候选池耗尽后还会把账号停掉。
+func (s *adminServiceImpl) ClearOpenAITurnStateRuntimeExtra(ctx context.Context, id int64) error {
+	return s.accountRepo.UpdateExtra(ctx, id, map[string]any{
+		openAITurnStatePoolExtraKey:     nil,
+		openAITurnStateHuntExtraKey:     nil,
+		openAITurnStateObservedExtraKey: nil,
+	})
+}
+
+// OpenAITurnStateIdentityChanged 报告重授权是否换了 ChatGPT 账号：按 credentials 里的
+// chatgpt_account_id 比，旧值缺失也算换了（看不出是谁就宁可清池）。非 Codex 上游不关心。
+func OpenAITurnStateIdentityChanged(existing *Account, credentials map[string]any) bool {
+	if existing == nil || !existing.TargetsChatGPTCodexUpstream() {
+		return false
+	}
+	old, _ := existing.Credentials["chatgpt_account_id"].(string)
+	next, _ := credentials["chatgpt_account_id"].(string)
+	old, next = strings.TrimSpace(old), strings.TrimSpace(next)
+	return old == "" || old != next
 }
 
 // BulkUpdateAccounts updates multiple accounts in one request.
@@ -994,6 +1024,10 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	delete(input.Extra, OllamaCloudUsageSnapshotExtraKey)
 	delete(input.Extra, OpenCodeGoUsageAutoRefreshExtraKey)
 	delete(input.Extra, OpenCodeGoUsageSnapshotExtraKey)
+	// 批量更新里混进的候选池不能写进每一个目标账号。
+	delete(input.Extra, openAITurnStatePoolExtraKey)
+	delete(input.Extra, openAITurnStateHuntExtraKey)
+	delete(input.Extra, openAITurnStateObservedExtraKey)
 
 	if len(input.AccountIDs) == 0 && input.Filters != nil {
 		accountIDs, err := s.resolveBulkUpdateTargetIDs(ctx, input.Filters)
