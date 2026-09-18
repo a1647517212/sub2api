@@ -502,6 +502,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := ValidateOpenAITurnStateAutoExtra(accountExtra); err != nil {
 		return nil, err
 	}
+	if err := ValidateOpenAITurnStateHunterExtra(accountExtra); err != nil {
+		return nil, err
+	}
 
 	// 绑定分组
 	groupIDs := input.GroupIDs
@@ -620,6 +623,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err := ValidateOpenAITurnStateAutoExtra(normalizedExtra); err != nil {
 			return nil, err
 		}
+		if err := ValidateOpenAITurnStateHunterExtra(normalizedExtra); err != nil {
+			return nil, err
+		}
 	}
 	previousProbeIdentity := upstreamBillingProbeIdentity(account)
 	previousOllamaUsageIdentity := ollamaCloudUsageIdentity(account)
@@ -704,6 +710,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, OpenCodeGoUsageSnapshotExtraKey)
 		// turn-state 候选池由网关维护。管理端快照不剔掉会把失效候选复活。
 		delete(normalizedExtra, openAITurnStatePoolExtraKey)
+		// 猎手运行态同理：小时计数、退避、出口冷却都在网关侧维护，快照回写会把它们全部倒回。
+		delete(normalizedExtra, openAITurnStateHuntExtraKey)
 		// 保留配额用量和专用服务受管字段，防止普通账号编辑意外覆盖。
 		for _, key := range []string{
 			"quota_used",
@@ -722,6 +730,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OpenCodeGoUsageAutoRefreshExtraKey,
 			OpenCodeGoUsageSnapshotExtraKey,
 			openAITurnStatePoolExtraKey,
+			openAITurnStateHuntExtraKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
