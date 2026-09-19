@@ -1603,8 +1603,29 @@ func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, 
 		h.anthropicStreamingAwareError(c, status, "api_error", failoverErr.ClientMessage, streamStarted)
 		return
 	}
+	if failoverErr != nil && failoverErr.Reason == service.OpenAITurnStateHoldReason {
+		// Claude 兼容桥是服务端注入 turn-state 的主要消费者，降智暂停在这里同样要说清原因，
+		// 不能被 mapUpstreamError 归一成「上游暂时不可用」的 502。
+		status, message := turnStateHoldClientResponse(failoverErr)
+		service.SetOpsUpstreamError(c, status, message, "")
+		h.anthropicStreamingAwareError(c, status, "api_error", message, streamStarted)
+		return
+	}
 	status, errType, errMsg := h.mapUpstreamError(failoverErr.StatusCode)
 	h.anthropicStreamingAwareError(c, status, errType, errMsg, streamStarted)
+}
+
+// turnStateHoldClientResponse 取降智暂停给客户端的状态码与说明（两个入口共用）。
+func turnStateHoldClientResponse(failoverErr *service.UpstreamFailoverError) (int, string) {
+	status := failoverErr.ClientStatusCode
+	if status <= 0 {
+		status = http.StatusServiceUnavailable
+	}
+	message := strings.TrimSpace(failoverErr.ClientMessage)
+	if message == "" {
+		message = "account is paused until a healthy x-codex-turn-state is found"
+	}
+	return status, message
 }
 
 // ensureAnthropicErrorResponse writes a fallback Anthropic error if no response was written.
@@ -3402,6 +3423,13 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		}
 		service.SetOpsUpstreamError(c, failoverErr.StatusCode, message, "")
 		h.handleStreamingAwareErrorWithCode(c, status, "upstream_error", service.OpenAIImagesInsufficientBalanceCode, message, streamStarted, false)
+		return
+	}
+	if failoverErr.Reason == service.OpenAITurnStateHoldReason {
+		// 降智暂停：账号缺 292 被停调度，池里又没别的号。
+		status, message := turnStateHoldClientResponse(failoverErr)
+		service.SetOpsUpstreamError(c, status, message, "")
+		h.handleStreamingAwareError(c, status, "server_error", message, streamStarted)
 		return
 	}
 	if failoverErr.IsCredentialFailure() {
