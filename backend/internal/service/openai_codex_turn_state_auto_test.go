@@ -228,8 +228,8 @@ func TestOpenAITurnStateAutoOnlyInjectsDegradedSessions(t *testing.T) {
 		turnStateBlob(openAIDegradedTurnStateLen))
 
 	override, source = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess-A"), account)
-	require.Equal(t, healthy, override, "判定降智后必须注入健康候选")
-	require.Equal(t, turnStateSourceAuto, source)
+	require.Empty(t, override, "自动接管已移除，判定降智后也不注入")
+	require.Empty(t, source)
 
 	// 另一个 session 不受影响
 	override, _ = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess-B"), account)
@@ -254,8 +254,8 @@ func TestOpenAITurnStateAutoBeatsManual(t *testing.T) {
 		turnStateBlob(openAIDegradedTurnStateLen))
 
 	override, source := svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess"), account)
-	require.Equal(t, healthy, override, "自动接管优先于手填")
-	require.Equal(t, turnStateSourceAuto, source)
+	require.Empty(t, override, "自动接管已移除")
+	require.Empty(t, source)
 
 	// 候选池空时也不回退到手填——接管就是接管，回退会让「已接管」的说明变成谎话
 	account.Extra[openAITurnStatePoolExtraKey] = []any{}
@@ -266,8 +266,8 @@ func TestOpenAITurnStateAutoBeatsManual(t *testing.T) {
 	// 关掉开关，手填立刻恢复生效
 	delete(account.Extra, openAITurnStateAutoExtraKey)
 	override, source = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess"), account)
-	require.Equal(t, "手填的值", override)
-	require.Equal(t, turnStateSourceManual, source)
+	require.Empty(t, override, "手填覆写已移除")
+	require.Empty(t, source)
 }
 
 // TestOpenAITurnStateAutoInjectedMintDoesNotResetSession 钉住防跳变：
@@ -285,7 +285,7 @@ func TestOpenAITurnStateAutoInjectedMintDoesNotResetSession(t *testing.T) {
 
 	c := turnStateAutoCtx("sess")
 	override, _ := svc.resolveOpenAITurnStateOverride(c, account)
-	require.Equal(t, healthy, override)
+	require.Empty(t, override, "自动接管已移除")
 	// 注入生效：上游改铸出另一条 292。它入池（见 TestOpenAITurnStateInjectedMintRefillsPool），
 	// 但不回写 session 判定——这两件事分开，本用例只钉后者。
 	fresher := turnStateBlob(openAIHealthyTurnStateLen-1) + "z"
@@ -294,8 +294,8 @@ func TestOpenAITurnStateAutoInjectedMintDoesNotResetSession(t *testing.T) {
 
 	// 该 session 仍被判定为降智：若拿注入后的结果回写判定，下一轮就不注入、
 	// 上游又铸回 312，两个状态来回跳。注入的换成了刚入池的新票（栈顶优先）。
-	require.Equal(t, fresher,
-		mustResolve(t, svc, turnStateAutoCtx("sess"), account), "注入成功不得清掉降智判定")
+	require.Empty(t,
+		mustResolve(t, svc, turnStateAutoCtx("sess"), account), "自动接管已移除，不再注入")
 }
 
 // TestOpenAITurnStateInjectedMintRefillsPool 复现「候选池饿死」。
@@ -314,7 +314,7 @@ func TestOpenAITurnStateInjectedMintRefillsPool(t *testing.T) {
 		turnStateBlob(openAIDegradedTurnStateLen))
 
 	c := turnStateAutoCtx("sess")
-	require.Equal(t, healthy, mustResolve(t, svc, c, account), "判定降智后应注入")
+	require.Empty(t, mustResolve(t, svc, c, account), "自动接管已移除")
 
 	// 注入生效：上游改铸出另一条健康 292。它必须入池，这是降智账号唯一的补票来源。
 	fresher := turnStateBlob(openAIHealthyTurnStateLen-1) + "z"
@@ -344,8 +344,8 @@ func TestOpenAITurnStateSessionlessClientIsCovered(t *testing.T) {
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx(""), account,
 		turnStateBlob(openAIDegradedTurnStateLen))
 
-	require.Equal(t, healthy, mustResolve(t, svc, turnStateAutoCtx(""), account),
-		"无 session-id 的请求也要能被接管")
+	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx(""), account),
+		"无 session-id 也不再接管")
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("sess-real"), account),
 		"占位域不得外溢到真实 session")
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtxModel("", "other-model"), account),
@@ -380,23 +380,12 @@ func TestOpenAITurnStateAutoDegradesThenDisables(t *testing.T) {
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx("sess"), account,
 		turnStateBlob(openAIDegradedTurnStateLen))
 
-	// 第 1 轮：注入 first，上游拒绝这条 blob → 默认阈值 1，first 立即失效
+	// 请求路径不再注入，因此上游拒绝也不会记到候选上或停账号。
 	c := turnStateAutoCtx("sess")
-	require.Equal(t, first, mustResolve(t, svc, c, account))
+	require.Empty(t, mustResolve(t, svc, c, account), "自动接管已移除")
 	svc.noteOpenAITurnStateRejected(c, account)
-	require.Empty(t, repo.schedulable, "还有候选就不该停账号")
-
-	// 第 2 轮：降级到 second
-	c = turnStateAutoCtx("sess")
-	require.Equal(t, second, mustResolve(t, svc, c, account), "必须降级到下一条候选")
-	svc.noteOpenAITurnStateRejected(c, account)
-
-	require.Equal(t, []bool{false}, repo.schedulable, "候选耗尽必须停调度")
-	require.Len(t, repo.errors, 1)
-	// 原因里必须写清失效的真实来源，别再写成「上游仍铸出更长的值」——那个判据已移除。
-	require.Contains(t, repo.errors[0], "invalid_encrypted_content")
-	require.Contains(t, repo.errors[0], "候选已全部失效")
-	require.False(t, account.Schedulable)
+	require.Empty(t, repo.schedulable, "没有注入就不得停账号")
+	require.Empty(t, repo.errors)
 
 	// 停掉之后不再注入（池里已无可用候选）
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("sess"), account))
@@ -413,9 +402,9 @@ func TestOpenAITurnStateWSClearsInjectionMarkerAcrossAttempts(t *testing.T) {
 	accountA := turnStateAutoAccount()
 	delete(accountA.Extra, openAITurnStateAutoExtraKey)
 	accountA.Extra[openAITurnStateOverrideExtraKey] = map[string]any{turnStateTestModel: "manual-blob-a"}
-	require.Equal(t, "manual-blob-a",
+	require.Equal(t, "",
 		svc.applyOpenAICodexTurnStateOverrideWSManualOnly(c, accountA, ""))
-	require.Equal(t, turnStateSourceManual, OpenAITurnStateUsageSource(c))
+	require.Empty(t, OpenAITurnStateUsageSource(c), "手填覆写已移除")
 
 	// attempt 2：failover 到没有覆写的账号 B，同一个 gin.Context。
 	accountB := turnStateAutoAccount()
@@ -534,7 +523,7 @@ func TestOpenAITurnStateAutoIsModelScoped(t *testing.T) {
 	// 同一个 session 在 luna 上被判降智 → luna 注入，astra 不注入。
 	svc.observeOpenAITurnStateMint(turnStateAutoCtxModel("s1", luna), account,
 		turnStateBlob(openAIDegradedTurnStateLen))
-	require.Equal(t, healthy, mustResolve(t, svc, turnStateAutoCtxModel("s1", luna), account))
+	require.Empty(t, mustResolve(t, svc, turnStateAutoCtxModel("s1", luna), account), "不再按模型注入")
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtxModel("s1", astra), account),
 		"换模型就是另一张票，不该沿用 luna 的降智判定")
 
@@ -622,10 +611,10 @@ func TestOpenAITurnStateManualOverrideIsPerModel(t *testing.T) {
 
 	// HTTP 与 WS 两条出站路径读的是同一张表。
 	svc := &OpenAIGatewayService{accountRepo: newTurnStateAutoRepo()}
-	require.Equal(t, lunaBlob, mustResolve(t, svc, turnStateAutoCtxModel("s", luna), account))
+	require.Empty(t, mustResolve(t, svc, turnStateAutoCtxModel("s", luna), account), "手填覆写不再注入")
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtxModel("s", "gpt-5.6-sol"), account))
-	require.Equal(t, astraBlob,
-		svc.applyOpenAICodexTurnStateOverrideWSManualOnly(turnStateAutoCtxModel("s", astra), account, "echoed"))
+	require.Equal(t, "echoed",
+		svc.applyOpenAICodexTurnStateOverrideWSManualOnly(turnStateAutoCtxModel("s", astra), account, "echoed"), "手填覆写不再注入")
 	require.Equal(t, "echoed",
 		svc.applyOpenAICodexTurnStateOverrideWSManualOnly(turnStateAutoCtxModel("s", "gpt-5.6-sol"), account, "echoed"),
 		"没配票就保留客户端回带值")
@@ -715,7 +704,7 @@ func TestOpenAITurnStateAutoSkippedOnWSContext(t *testing.T) {
 	// 干净的 HTTP 上下文照常接管，证明上面的空不是因为别的原因
 	fresh := turnStateAutoCtx("sess")
 	svc.applyOpenAICodexTurnStateOverrideHeader(fresh, account, http.Header{})
-	require.Equal(t, turnStateSourceAuto, OpenAITurnStateUsageSource(fresh))
+	require.Empty(t, OpenAITurnStateUsageSource(fresh), "HTTP 也不再自动接管")
 }
 
 // TestOpenAITurnStateWSManualRecordsUsageSource 钉住 WS 手填覆写仍然记进使用记录。
@@ -726,10 +715,10 @@ func TestOpenAITurnStateWSManualRecordsUsageSource(t *testing.T) {
 	account.Extra[openAITurnStateOverrideExtraKey] = map[string]any{turnStateTestModel: "手填的值"}
 
 	c := turnStateAutoCtx("sess")
-	require.Equal(t, "手填的值", svc.applyOpenAICodexTurnStateOverrideWSManualOnly(c, account, "客户端自带"))
-	require.Equal(t, turnStateSourceManual, OpenAITurnStateUsageSource(c))
-	require.Equal(t, "手填的值", openAITurnStateInjectedFromContext(c),
-		"帧填充据此判断是否强制覆盖客户端自带 blob")
+	require.Equal(t, "客户端自带", svc.applyOpenAICodexTurnStateOverrideWSManualOnly(c, account, "客户端自带"))
+	require.Empty(t, OpenAITurnStateUsageSource(c))
+	require.Empty(t, openAITurnStateInjectedFromContext(c),
+		"手填覆写已移除")
 
 	// 没配手填 = 功能不存在，一个标记都不留
 	plain := turnStateAutoCtx("sess")
@@ -753,7 +742,7 @@ func TestOpenAITurnStateInjectionMarkerClearedPerAttempt(t *testing.T) {
 
 	c := turnStateAutoCtx("sess")
 	svc.applyOpenAICodexTurnStateOverrideHeader(c, first, http.Header{})
-	require.Equal(t, "第一个账号的手填值", openAITurnStateInjectedFromContext(c))
+	require.Empty(t, openAITurnStateInjectedFromContext(c), "手填覆写不再注入")
 
 	// 换号重试：新账号没配覆写，标记必须清干净
 	h := http.Header{}
@@ -808,7 +797,7 @@ func TestOpenAITurnStateSessionKeyIsAccountScoped(t *testing.T) {
 	// A 判定降智，B 的同名 session 不受影响
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx("same-sess"), a,
 		turnStateBlob(openAIDegradedTurnStateLen))
-	require.Equal(t, healthy, mustResolve(t, svc, turnStateAutoCtx("same-sess"), a))
+	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("same-sess"), a), "不再注入")
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("same-sess"), b),
 		"A 的降智判定不得外溢到 B")
 }
@@ -847,8 +836,9 @@ func TestOpenAITurnStateFailureReadsFreshPool(t *testing.T) {
 
 	c := turnStateAutoCtx("sess")
 	svc.observeOpenAITurnStateMint(c, stale, turnStateBlob(openAIDegradedTurnStateLen))
-	require.Equal(t, injected, mustResolve(t, svc, c, stale))
-	// 注入的这条也被上游拒绝 → 两条都失效 → 必须停号
+	require.Empty(t, mustResolve(t, svc, c, stale), "请求路径不再注入")
+	markOpenAITurnStateInjected(c, injected, turnStateSourceAuto)
+	// 失效记账仍读新鲜池：只有显式标过注入的拒绝才记到候选上。
 	svc.noteOpenAITurnStateRejected(c, stale)
 
 	require.Equal(t, []bool{false}, repo.schedulable,
@@ -881,8 +871,8 @@ func TestOpenAITurnStateInjectionReadsFreshPool(t *testing.T) {
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx("sess"), stale,
 		turnStateBlob(openAIDegradedTurnStateLen))
 
-	require.Equal(t, refilled, mustResolve(t, svc, turnStateAutoCtx("sess"), stale),
-		"读陈旧快照的话新补的票要等一轮 rebuild 才注得出去")
+	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("sess"), stale),
+		"即使池里有新票也不再注入")
 }
 
 // TestOpenAITurnStateObservationDedupedPerContext 钉住 ctxKeyTurnStateObserved 这道闸：
@@ -924,7 +914,8 @@ func TestOpenAITurnStateRejectionDedupedPerContext(t *testing.T) {
 		turnStateBlob(openAIDegradedTurnStateLen))
 
 	c := turnStateAutoCtx("sess")
-	require.Equal(t, first, mustResolve(t, svc, c, account))
+	require.Empty(t, mustResolve(t, svc, c, account), "请求路径不再注入")
+	markOpenAITurnStateInjected(c, first, turnStateSourceAuto)
 	svc.noteOpenAITurnStateRejected(c, account)
 	svc.noteOpenAITurnStateRejected(c, account) // 第二个调用点
 
@@ -1104,7 +1095,8 @@ func TestOpenAITurnStateObservationIgnoresEchoedInjection(t *testing.T) {
 	require.Equal(t, 11, observed.Blocks, "前提：自然铸造的 312 记下来了")
 
 	c := turnStateAutoCtx("sess")
-	require.Equal(t, healthy, mustResolve(t, svc, c, account), "前提：这张 292 正在注入")
+	require.Empty(t, mustResolve(t, svc, c, account), "请求路径不再注入")
+	markOpenAITurnStateInjected(c, healthy, turnStateSourceAuto)
 
 	// 上游把注入的那张 292 原样回带。形态观测不得把它当成「这个号现在铸 292」。
 	svc.observeOpenAITurnStateMint(c, account, healthy)
@@ -1140,7 +1132,7 @@ func TestOpenAITurnStateInjectedTicketSurvivesDegradedMint(t *testing.T) {
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx("sess"), account,
 		turnStateBlob(openAIDegradedTurnStateLen))
 	c := turnStateAutoCtx("sess")
-	require.Equal(t, healthy, mustResolve(t, svc, c, account), "前提：这张票正在注入")
+	require.Empty(t, mustResolve(t, svc, c, account), "请求路径不再注入")
 
 	// 注入生效的这一轮，上游仍铸出 312 —— 账号权重低的读数，不是票的失效证据。
 	svc.observeOpenAITurnStateMint(c, account, turnStateBlob(openAIDegradedTurnStateLen))
@@ -1156,8 +1148,8 @@ func TestOpenAITurnStateInjectedTicketSurvivesDegradedMint(t *testing.T) {
 	require.False(t, ticket.Failed, "上游铸 312 不是这张票的失效证据")
 	require.Zero(t, ticket.FailStreak, "更不该记失败计数")
 
-	require.Equal(t, healthy, mustResolve(t, svc, turnStateAutoCtx("sess"), account),
-		"票没坏就该继续用到自然过期")
+	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("sess"), account),
+		"票还在池里也不再注入")
 }
 
 // TestOpenAITurnStateShapeTableIsSelfConsistent 把形态表的两条性质变成被守住的不变量。

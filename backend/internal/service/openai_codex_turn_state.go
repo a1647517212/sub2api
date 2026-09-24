@@ -362,22 +362,9 @@ func openAITurnStateBlobExpired(blob string, ttl time.Duration, now time.Time) b
 // 循环全程共用同一个 c）：注入标记会在整条连接上粘住，把后续每一轮的铸造结果都算到
 // 第一次注入头上，失效判定直接失真。首版按 HTTP-only 落地，WS 保持既有手填行为。
 func (s *OpenAIGatewayService) applyOpenAICodexTurnStateOverrideWSManualOnly(c *gin.Context, account *Account, current string) string {
-	// 整个 WS 上下文都不参与自动接管——包括 WS ingress 的 HTTP 桥，它会拿同一个 c
-	// 去走 passthrough 的出站构建（openai_ws_http_bridge.go），不挡住就漏进去了。
+	// 手填覆写已移除。WS 仍跳过自动接管（函数名保留给调用点），并记录客户端自己的值。
 	markOpenAITurnStateAutoSkipped(c)
-	// 与 HTTP 侧同理：每次重新判定前先清注入标记。attempt 1 走 HTTP 注入过、
-	// attempt 2 failover 到另一个账号且走 WS 时，不清就会把上一个账号的注入值
-	// 记到这一轮的使用记录上（overridden=true / source=manual，而本轮根本没注入）。
 	clearOpenAITurnStateInjected(c)
-	if account == nil || account.IsOpenAITurnStateAutoEnabled() {
-		return current
-	}
-	if manual := account.OpenAICodexTurnStateOverride(openAITurnStateRequestModel(c)); manual != "" {
-		// 记进上下文：帧填充据此判断「本次是不是覆写」，使用记录据此记 overridden/来源。
-		markOpenAITurnStateInjected(c, manual, turnStateSourceManual)
-		markOpenAITurnStateSent(c, account, manual)
-		return manual
-	}
 	markOpenAITurnStateSent(c, account, current)
 	return current
 }
@@ -393,11 +380,8 @@ func (s *OpenAIGatewayService) applyOpenAICodexTurnStateOverrideHeader(c *gin.Co
 	if account != nil && account.TargetsChatGPTCodexUpstream() && !openAITurnStateProbeContext(c) {
 		s.noteOpenAITurnStateTraffic(account.ID, openAITurnStateRequestModel(c), time.Now())
 	}
-	// 每个 failover attempt 都重新判定：c 在整个重试循环里是同一个。
 	clearOpenAITurnStateInjected(c)
-	if override, _ := s.resolveOpenAITurnStateOverride(c, account); override != "" {
-		h.Set(openAICodexTurnStateHeader, override)
-	}
+	// 不再注入手填或自动接管的 turn-state。出站只保留守卫剥过之后的客户端原值。
 	// 记下本次真正出站的值（可能来自客户端回带，也可能是刚注入的）。
 	markOpenAITurnStateSent(c, account, h.Get(openAICodexTurnStateHeader))
 }

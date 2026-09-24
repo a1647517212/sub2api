@@ -603,7 +603,7 @@ func (s *OpenAITurnStateHunterService) runOnce(ctx context.Context) {
 		// 门槛会自己刹车；显式 idle_minutes=-1 表示用户就是要它一直猎。
 		// 池耗尽停号走的是 SetError（status=error），ListByPlatform 直接就不返回它——那条路
 		// 要人工关接管再启用，猎手救不了。
-		if account.Status != StatusActive || !account.IsOpenAITurnStateHunterEnabled() || !account.IsOpenAITurnStateAutoEnabled() {
+		if account.Status != StatusActive || !account.IsOpenAITurnStateHunterEnabled() {
 			continue
 		}
 		if sess := s.openHunt(ctx, account); sess != nil {
@@ -937,7 +937,7 @@ func (s *OpenAITurnStateHunterService) huntSessionCurrent(ctx context.Context, s
 	if err != nil || latest == nil {
 		return true
 	}
-	if latest.Status != StatusActive || !latest.IsOpenAITurnStateHunterEnabled() || !latest.IsOpenAITurnStateAutoEnabled() {
+	if latest.Status != StatusActive || !latest.IsOpenAITurnStateHunterEnabled() {
 		return false
 	}
 	return openAITurnStateHunterConfigJSON(latest) == openAITurnStateHunterConfigJSON(sess.account)

@@ -1028,13 +1028,13 @@ func TestOpenAITurnStateHunterGates(t *testing.T) {
 		h.run(t)
 		require.Empty(t, h.up.requests)
 	})
-	t.Run("auto takeover disabled", func(t *testing.T) {
+	t.Run("auto takeover disabled still hunts", func(t *testing.T) {
 		account := hunterTestAccount(hunterConfig(nil))
 		delete(account.Extra, openAITurnStateAutoExtraKey)
 		h := newHunterHarness(account, hunterWebshareProxy)
 		h.up.queue = []*http.Response{healthy()}
 		h.run(t)
-		require.Empty(t, h.up.requests, "票只入池不注入等于白猎")
+		require.NotEmpty(t, h.up.requests, "猎手不再依赖自动接管开关")
 	})
 	t.Run("proxy inactive", func(t *testing.T) {
 		inactive := hunterWebshareProxy
@@ -1193,8 +1193,8 @@ func TestOpenAITurnStateInjectsEverySessionWhenHunterEnabled(t *testing.T) {
 	gw.pushOpenAITurnStateCandidate(turnStateAutoCtxModel("seed", hunterTestModel), account, blob)
 
 	got, source := gw.resolveOpenAITurnStateOverride(turnStateAutoCtxModel("fresh-session", hunterTestModel), account)
-	require.Equal(t, blob, got, "开了猎手：新会话第一回合就注")
-	require.Equal(t, turnStateSourceAuto, source)
+	require.Empty(t, got, "自动接管已移除：猎手入池也不再注入真实流量")
+	require.Empty(t, source)
 
 	gw.pushOpenAITurnStateCandidate(turnStateAutoCtxModel("seed-other", "gpt-6"), account, turnStateFernetBlob(time.Now().Add(time.Second), openAIHealthyTurnStateBlocks))
 	got, _ = gw.resolveOpenAITurnStateOverride(turnStateAutoCtxModel("fresh-session-other", "gpt-6"), account)

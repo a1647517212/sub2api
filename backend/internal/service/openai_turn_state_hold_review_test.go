@@ -51,20 +51,15 @@ func TestOpenAITurnStateHoldSurfacesFromBuildUpstreamRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	req, err := h.gw.buildUpstreamRequest(ctx, c, h.account, body, "offline-token", true, "", true)
-	require.Nil(t, req)
-	var failover *UpstreamFailoverError
-	require.ErrorAs(t, err, &failover)
-	require.Equal(t, OpenAITurnStateHoldReason, failover.Reason)
-	require.False(t, failover.ShouldReportAccountScheduleFailure(), "本地判定缺票不是账号出错，不进调度器错误率")
-	require.Equal(t, []string{hunterTestModel}, h.repo.holds)
+	require.NoError(t, err)
+	require.NotNil(t, req, "缺票不再拦截出站")
+	require.Empty(t, h.repo.holds)
 
-	// 透传构造同样要拦。
 	c2 := turnStateAutoCtxModel("real-2", hunterTestModel)
 	_, err = h.gw.prepareCodexAccountIdentitySource(ctx, c2, h.account)
 	require.NoError(t, err)
 	req, err = h.gw.buildUpstreamRequestOpenAIPassthrough(ctx, c2, h.account, body, "offline-token")
-	require.Nil(t, req)
-	require.ErrorAs(t, err, &failover)
-	require.Equal(t, OpenAITurnStateHoldReason, failover.Reason)
-	require.Len(t, h.repo.holds, 1, "已经停着就只换号，不再写库")
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Empty(t, h.repo.holds)
 }

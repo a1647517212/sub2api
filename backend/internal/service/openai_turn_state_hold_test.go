@@ -36,6 +36,8 @@ func TestOpenAITurnStateHoldBlocksUnfilledHuntedModel(t *testing.T) {
 
 	c := turnStateAutoCtxModel("real", hunterTestModel)
 	gw.applyOpenAICodexTurnStateOverrideHeader(c, account, http.Header{})
+	require.NoError(t, openAITurnStateHoldError(c), "请求路径不再因缺票暂停")
+	gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
 
 	var failover *UpstreamFailoverError
 	require.ErrorAs(t, openAITurnStateHoldError(c), &failover)
@@ -54,7 +56,7 @@ func TestOpenAITurnStateHoldBlocksUnfilledHuntedModel(t *testing.T) {
 
 	// 停着期间再来一条：只换号，不再写库。
 	c2 := turnStateAutoCtxModel("real-2", hunterTestModel)
-	gw.applyOpenAICodexTurnStateOverrideHeader(c2, account, http.Header{})
+	gw.holdOpenAITurnStateIfUnfilled(c2, account, hunterTestModel)
 	require.Error(t, openAITurnStateHoldError(c2))
 	require.Len(t, repo.holds, 1)
 
@@ -67,7 +69,7 @@ func TestOpenAITurnStateHoldBlocksUnfilledHuntedModel(t *testing.T) {
 	// 到期后再来一条：还缺票就再停一次（有人用就一直处于「停着 → 到期 → 再停」）。
 	markHeld(account, time.Now().Add(-time.Second))
 	c3 := turnStateAutoCtxModel("real-3", hunterTestModel)
-	gw.applyOpenAICodexTurnStateOverrideHeader(c3, account, http.Header{})
+	gw.holdOpenAITurnStateIfUnfilled(c3, account, hunterTestModel)
 	require.Error(t, openAITurnStateHoldError(c3))
 	require.Len(t, repo.holds, 2)
 	require.True(t, openAITurnStateModelHeld(account, hunterTestModel, time.Now()))
@@ -83,7 +85,7 @@ func TestOpenAITurnStateHoldIsModelScoped(t *testing.T) {
 	gw := &OpenAIGatewayService{accountRepo: repo}
 	require.True(t, account.IsSchedulable())
 
-	gw.applyOpenAICodexTurnStateOverrideHeader(turnStateAutoCtxModel("sol", "gpt-5.6-sol"), account, http.Header{})
+	gw.holdOpenAITurnStateIfUnfilled(turnStateAutoCtxModel("sol", "gpt-5.6-sol"), account, "gpt-5.6-sol")
 	require.Equal(t, []string{"gpt-5.6-sol"}, repo.holds)
 
 	ctx := context.Background()
@@ -155,7 +157,7 @@ func TestOpenAITurnStateHoldIgnoresStaleOrForeignEcho(t *testing.T) {
 		gw := &OpenAIGatewayService{accountRepo: repo}
 		c := turnStateAutoCtxModel("real", hunterTestModel)
 		c.Request.Header.Set(openAICodexTurnStateHeader, turnStateFernetBlob(now.Add(-2*time.Hour), openAIHealthyTurnStateBlocks))
-		gw.applyOpenAICodexTurnStateOverrideHeader(c, account, http.Header{})
+		gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
 		require.Error(t, openAITurnStateHoldError(c))
 		require.Len(t, repo.holds, 1)
 	})
@@ -171,7 +173,7 @@ func TestOpenAITurnStateHoldIgnoresStaleOrForeignEcho(t *testing.T) {
 		gw.noteOpenAICodexTurnStateOrigin(turnStateAutoCtxModel("prev", hunterTestModel), other, blob)
 		c := turnStateAutoCtxModel("real", hunterTestModel)
 		c.Request.Header.Set(openAICodexTurnStateHeader, blob)
-		gw.applyOpenAICodexTurnStateOverrideHeader(c, account, http.Header{})
+		gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
 		require.Error(t, openAITurnStateHoldError(c))
 		require.Len(t, repo.holds, 1)
 	})
@@ -317,7 +319,7 @@ func TestOpenAITurnStateHoldReleasedWhenDisabled(t *testing.T) {
 		h := newHunterHarness(account, hunterWebshareProxy)
 		markHeld(h.account, now.Add(30*time.Minute))
 		h.run(t)
-		require.Empty(t, h.up.requests)
+		require.NotEmpty(t, h.up.requests, "关掉自动接管不再停猎手")
 		require.Equal(t, 1, h.repo.clears)
 	})
 }
@@ -410,7 +412,7 @@ func TestOpenAITurnStateAutoModeHuntsEverHeldModelAfterRestart(t *testing.T) {
 
 	require.True(t, gw.openAITurnStateHuntedModel(account, hunterTestModel))
 	c := turnStateAutoCtxModel("real", hunterTestModel)
-	gw.applyOpenAICodexTurnStateOverrideHeader(c, account, http.Header{})
+	gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
 	require.Error(t, openAITurnStateHoldError(c), "到期后再来一条：再停一次，不裸奔")
 	require.Equal(t, []string{hunterTestModel}, repo.holds)
 	require.False(t, gw.openAITurnStateHuntedModel(account, "gpt-5.6-sol"), "没停过、没铸过的模型仍不算")

@@ -1478,15 +1478,14 @@ func TestOpenAITurnStateOverrideAppliesToCodexUpstreams(t *testing.T) {
 		h := http.Header{}
 		h.Set(openAICodexTurnStateHeader, "客户端自己回带的旧值")
 		svc.applyOpenAICodexTurnStateOverrideHeader(newTurnStateTestCtx(), acc, h)
-		require.Equal(t, blob, h.Get(openAICodexTurnStateHeader), "覆写必须盖过客户端回带值")
+		require.Equal(t, "客户端自己回带的旧值", h.Get(openAICodexTurnStateHeader), "手填覆写已移除，不得盖过客户端回带值")
 
-		// 守卫剥光之后（头已不存在）覆写照样要写进去，否则「配了但不生效」
 		stripped := http.Header{}
 		svc.applyOpenAICodexTurnStateOverrideHeader(newTurnStateTestCtx(), acc, stripped)
-		require.Equal(t, blob, stripped.Get(openAICodexTurnStateHeader), "守卫剥离后覆写仍须生效")
+		require.Empty(t, stripped.Get(openAICodexTurnStateHeader), "未配置出站头时不得写入覆写")
 
-		require.Equal(t, blob,
-			svc.applyOpenAICodexTurnStateOverrideWSManualOnly(newTurnStateTestCtx(), acc, ""), "值形态（WS 路径）同样生效")
+		require.Equal(t, "",
+			svc.applyOpenAICodexTurnStateOverrideWSManualOnly(newTurnStateTestCtx(), acc, ""), "WS 也不再应用手填覆写")
 	}
 
 	// 不适用：上游不是 Codex 后端的账号，一个字节都不能碰

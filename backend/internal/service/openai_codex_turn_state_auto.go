@@ -321,57 +321,9 @@ func (s *OpenAIGatewayService) sweepOpenAITurnStateSessions() {
 //
 // 返回空串表示不改写出站头。
 func (s *OpenAIGatewayService) resolveOpenAITurnStateOverride(c *gin.Context, account *Account) (string, string) {
-	if account == nil {
-		return "", ""
-	}
-	// 两条路都按模型取票：turn-state 绑死在铸它的那个模型上，注给别的模型只会白撞
-	// 一次 invalid_encrypted_content。取不到本次模型时两条路都不注入。
-	model := openAITurnStateRequestModel(c)
-	if !account.IsOpenAITurnStateAutoEnabled() {
-		if manual := account.OpenAICodexTurnStateOverride(model); manual != "" {
-			markOpenAITurnStateInjected(c, manual, turnStateSourceManual)
-			return manual, turnStateSourceManual
-		}
-		return "", ""
-	}
-	if openAITurnStateAutoSkipped(c) {
-		return "", ""
-	}
-	// 只在已判定降智的 session 上注入，其余保持真客户端形态——除非猎手在为本次模型
-	// 补票：那时形态读数由猎手的探测提供，不再需要拿真实流量的首回合去试权重，池里
-	// 有票就直接注，新会话第一回合也不裸奔。猎手不管的模型仍走「先判定再注入」。
-	key := openAITurnStateSessionKey(c, account, openAITurnStateRequestSessionID(c))
-	degraded := s.sessionNeedsTurnStateInjection(key)
-	if !degraded && !s.openAITurnStateHuntedModel(account, model) {
-		return "", ""
-	}
-	// 必须读新鲜池，不能读请求手里的 account 快照。
-	//
-	// 那个快照来自调度器的 Redis 副本（hydrateSelectedAccount → scheduler_snapshot_service），
-	// 而 openai_turn_state_pool 在 schedulerNeutralExtraKeys 里——池子写入刻意不触发
-	// 快照重建（否则每条响应都要重建一次调度快照），于是副本最多陈旧一整个
-	// full_rebuild_interval_seconds（默认 300s）。两个后果都不能忍：
-	//   - 刚补进池的新票要等下一轮 rebuild 才注得出去，「补票」这件事等于慢五分钟；
-	//   - 已判 Failed 的候选在陈旧副本里仍是 alive，会被反复注入，而 record 侧从新鲜池
-	//     里找不到这条 blob → changed 恒 false → 耗尽判定和停号整段都走不到。
-	//
-	// ponytail: 代价是降智 session 的每个请求多一次 GetByID。本功能是单账号诊断用途、
-	// 低并发，且这条路径本来就会在响应收尾时同步写一次库；真要上量再加个短 TTL 缓存。
-	pool := s.loadOpenAITurnStatePoolFresh(turnStateOpCtx(c), account)
-	candidate, source, ok := pickOpenAITurnStateCandidate(
-		pool, model, account.openAITurnStateStaleAfter(), time.Now())
-	if !ok {
-		// 「判了降智但拿不出票」是接管停摆的唯一形态，不打日志就只能靠猜。猎手路径上
-		// 池空是还没摇到票的常态，每条请求都刷一行只会淹没日志。
-		if degraded {
-			logOpenAITurnStateAuto("account=%d model=%s degraded but no usable candidate (pool=%d)",
-				account.ID, model, len(pool))
-		}
-		s.holdOpenAITurnStateIfUnfilled(c, account, model)
-		return "", ""
-	}
-	markOpenAITurnStateInjected(c, candidate.Blob, source)
-	return candidate.Blob, source
+	// 自动接管和手填覆写已移除：不再把 292 注入出站，也不再因此暂停账号。
+	// 指纹收敛只保留跨账号回带剥离（guardOpenAICodexTurnState*）。
+	return "", ""
 }
 
 // markOpenAITurnStateInjected 把本次覆写值与来源存进请求上下文。
@@ -516,38 +468,13 @@ func (s *OpenAIGatewayService) observeOpenAITurnStateMint(c *gin.Context, accoun
 		}
 	}
 
-	if !account.IsOpenAITurnStateAutoEnabled() {
+	if !account.IsOpenAITurnStateAutoEnabled() && !account.IsOpenAITurnStateHunterEnabled() {
 		return
 	}
 
-	// 入池刻意留在接管门禁之后：它是同步的读库+写库（GetByID 连带 loadProxies /
-	// loadAccountGroups 共 3 条 SELECT，再加一条 UPDATE），就在响应首字节之前、还持着
-	// 账号锁。而「请求不带 turn-state 时 87.1% 会铸出新值」（见文件头），放到门禁之前
-	// 等于给每个 Codex 账号的每一条响应都加上这笔开销——同一行 accounts 每请求一次
-	// UPDATE，行锁排队加死元组堆积。只有主动开了接管的诊断账号该付这个钱。
-	//
-	// 入池不分「本次有没有注入」：一个 session 被判降智后每条请求都带注入，若入池只认
-	// 未注入的请求，降智账号就补不到票——池子只出不进，候选到期后自动接管静默停摆。
-	// （补票实际来自同账号其它未降智的 session：降智 session 注入后上游照样铸 312。）
+	// 入池只服务猎手的补票库存。自动接管已移除，不再根据铸造结果标记 session、也不再注入。
 	if healthy {
 		s.pushOpenAITurnStateCandidate(c, account, minted)
-	}
-
-	// 只在本次没注入时回写 session 判定。
-	//
-	// 这道闸原本的理由是「注入一生效就把降智标记抹掉，两个状态来回跳」，那个理由已经
-	// 不成立：铸什么由账号当时的权重定，与请求带的票无关（见下方长注释），注入并不会
-	// 把铸造结果掰成 292，所以注入时的观测并不比不注入时脏。
-	//
-	// 留着它是因为成本不对称：判过降智之后继续注入几乎不要钱（票已经在池里，注入不
-	// 消耗它），而凭单次健康铸造就停掉注入，下一轮撞上权重抖动就是用户实打实吃一个
-	// 降智回合。代价是恢复判定要晚一步——账号权重回正后，该 session 仍会一直注到
-	// session 标记自己过期（openAITurnStateSessionTTL），此后的请求重新按自然铸造判。
-	// 探测的 session 是一次性的（每次新 UUID，永远不会再出现），不给它留 session 判定。
-	if injected == "" && !openAITurnStateProbeContext(c) {
-		if key := openAITurnStateSessionKey(c, account, openAITurnStateRequestSessionID(c)); key != "" {
-			s.setSessionTurnStateNeedsInjection(key, !healthy)
-		}
 	}
 
 	// 刻意不在这里记候选的成败。

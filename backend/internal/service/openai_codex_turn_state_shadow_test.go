@@ -342,6 +342,6 @@ func TestOpenAITurnStateOverrideBeatsEchoGuard(t *testing.T) {
 	_, err := svc.Forward(context.Background(), c, parent, body)
 	require.NoError(t, err)
 	require.Len(t, up.requests, 1)
-	require.Equal(t, override, up.requests[0].Header.Get(openAICodexTurnStateHeader),
-		"覆写排在守卫之前的话，这里会是空——配置静默失效")
+	require.Empty(t, up.requests[0].Header.Get(openAICodexTurnStateHeader),
+		"守卫剥掉异凭证域回带后，手填覆写不再写回")
 }

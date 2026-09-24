@@ -118,12 +118,10 @@
  *
  * 三个数据源都在 account.extra 里，跟着账号列表一起下发，不额外调接口：
  *
- *  - openai_turn_state_pool：候选池，只在自动接管开着时由网关维护，带 blob。
- *  - openai_turn_state_override：手填覆写，只在自动接管关着时生效，带 blob。
+ *  - openai_turn_state_pool：猎手补票库存。自动接管已移除，这些票不再注入出站。
  *  - openai_turn_state_observed：形态观测，所有 Codex 账号都记，**不带 blob**
- *    （blob 是上游令牌，后端刻意只存块数/字符数）。接管关着时它是唯一有数据的源。
- *    **只有未降智的进展示**：一条 312 永远注不出去，摆在票旁边只会被读成票，而
- *    「这个号在铸 312」用量表每行都写着。降智那条仍参与 starved 判定，见下。
+ *    （blob 是上游令牌，后端刻意只存块数/字符数）。这是账号页现在展示的读数。
+ *    **只有未降智的进展示**。
  */
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -131,8 +129,6 @@ import UsageProgressBar from './UsageProgressBar.vue'
 import { useNowTicker } from '@/composables/useNowTicker'
 import type { Account } from '@/types'
 import {
-  decodeTurnState,
-  isTurnStateHealthy,
   targetsCodexUpstream,
   TURN_STATE_DEFAULT_TTL_MINUTES,
   TURN_STATE_HOLD_REASON,
@@ -213,59 +209,8 @@ const ttlMs = computed(() => {
 // 只有最终落到 ChatGPT Codex 后端的账号才有这个头（oauth / setup-token / cpr）。
 const isCodexAccount = computed(() => targetsCodexUpstream(props.account))
 
-/**
- * 自动接管关着时生效的是手填覆写表——后端的分支正好相反（开了自动就完全忽略手填）。
- * 不展示它的话，「票正在注入」的账号格子上会写着「没有生效的票」，那比整块不渲染更糟：
- * 歧义换成了错误断言。
- *
- * 铸造时刻只能从信封自己解：手填票没有后端写的 minted_at。解不出就不展示这一条，
- * 与候选池「没有 minted_at 就跳过」同一套降级——算不出到期时间的进度条是假的。
- */
-const manualOverrides = computed<PoolTicket[]>(() => {
-  const raw = extra.value['openai_turn_state_override']
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
-  const out: PoolTicket[] = []
-  for (const [model, blob] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof blob !== 'string' || !blob.trim() || !model.trim()) continue
-    const trimmed = blob.trim()
-    const env = decodeTurnState(trimmed)
-    if (!env) continue
-    out.push({
-      model: model.trim(),
-      chars: trimmed.length,
-      healthy: isTurnStateHealthy(trimmed),
-      mintedAt: env.mintedAt,
-      active: true
-    })
-  }
-  return out
-})
-
-const isManualMode = computed(
-  () => isCodexAccount.value && extra.value['openai_turn_state_auto'] !== true
-)
-
-/** 自动接管开着时真正会被注入的那些票。关着时后端不写这个键，自然就是空的。 */
-const candidatePool = computed<PoolTicket[]>(() => {
-  const raw = extra.value['openai_turn_state_pool']
-  if (!Array.isArray(raw)) return []
-  const out: PoolTicket[] = []
-  for (const c of raw as PoolCandidate[]) {
-    const model = String(c?.model ?? '').trim()
-    const blob = String(c?.blob ?? '').trim()
-    if (!model || !blob || c?.failed) continue
-    const minted = c?.minted_at ? new Date(c.minted_at) : null
-    if (!minted || Number.isNaN(minted.getTime())) continue
-    out.push({
-      model,
-      chars: blob.length,
-      healthy: isTurnStateHealthy(blob),
-      mintedAt: minted,
-      active: true
-    })
-  }
-  return out
-})
+/** 手填覆写和自动接管已移除，账号页不再把任何票标成「正在注入」。 */
+const isManualMode = computed(() => false)
 
 /**
  * 网关对所有 Codex 账号采集的形态观测，与接管开关无关，最多一条。
@@ -296,23 +241,10 @@ const observedShapes = computed<PoolTicket[]>(() => {
   ]
 })
 
-/**
- * 两件事要同时说清楚：现在有哪些票，以及其中哪些**真的会被注入**。后端的分支是
- * 自动接管开着就只认候选池、完全忽略手填；关着就只认手填。
- *
- * 观测行两种模式下都展示（标成「最近铸出」），但**只展示未降智的**：一条 312 永远
- * 注不出去，摆在票旁边只会被读成票（2026-09-18 用户就是这么读的），而「这个号在铸
- * 312」用量表每行都写着，不需要账号页再说一遍。降智那条仍参与 starved 判定。
- *
- * 返回的是**分组**而不是拼好的一串：entries 要在每组内部各自按模型去重。合成一组
- * 去重的话，同一个模型下生效票会把观测行整个吃掉——而运维盯着的恰恰是那个模型。
- */
+/** 自动接管和手填覆写已移除。账号页只展示自然铸造的健康读数，不再把候选池或手填票当成正在注入。 */
 const poolGroups = computed<PoolTicket[][]>(() => {
   if (!isCodexAccount.value) return []
-  return [
-    isManualMode.value ? manualOverrides.value : candidatePool.value,
-    observedShapes.value.filter((o) => o.healthy)
-  ]
+  return [observedShapes.value.filter((o) => o.healthy)]
 })
 
 interface PoolEntry {
@@ -400,28 +332,8 @@ const visibleEntries = computed<PoolEntry[]>(() => {
 })
 
 /**
- * 自动接管开着、却一条可用票都拿不出来 = 注入停摆：客户端回带什么就原样发什么，
- * 降智会话下就是 312 直接出站。这跟「没开接管」是两件事，页面上必须分得出来——
- * 2026-09-18 就是因为两者长得一样，用户只能翻 usage 表才发现在裸奔。
- *
- * 判据是 activeCount 而不是 entries.length：形态观测对所有 Codex 账号都采集，池子空到
- * 底时观测行照样在，拿总行数判的话这条告警永远不会亮。
- *
- * 还要求「一个 TTL 内铸过票」（hasRecentMint），否则接管开着的账号只要一小时没流量就
- * 永久挂着琥珀色告警，刚打开开关、还没跑过一次请求的账号也立刻报警——在最常见的状态下
- * 恒亮的告警等于没有告警。裸奔说的是「在跑，而且注不出去」，不是「没在跑」。
- */
-const hasRecentMint = computed(() =>
-  observedShapes.value.some((o) => o.mintedAt.getTime() + ttlMs.value > sharedNow.value)
-)
-
-const starved = computed(
-  () =>
-    isCodexAccount.value &&
-    !isManualMode.value &&
-    activeCount.value === 0 &&
-    hasRecentMint.value
-)
+// 自动接管已移除：没有「开着却注不出去」这回事，不再报裸奔。
+const starved = computed(() => false)
 
 const emptyLabel = computed(() =>
   t(
@@ -484,11 +396,8 @@ const huntAttempts = computed<HuntAttempt[]>(() =>
   Array.isArray(huntState.value.last) ? huntState.value.last : []
 )
 
-/**
- * 后端 runOnce 要求猎手开关与自动接管**同时**开着才跑（票靠接管注入，只猎不注是白烧
- * 额度）。只看猎手开关的话，接管关着时这行会写着「待命」，而猎手一次都不会运行。
- */
-const hunterNeedsAuto = computed(() => hunterMaxPerHour.value !== null && isManualMode.value)
+/** 猎手不再依赖自动接管：关着接管也会探测，页面不要把它标成未生效。 */
+const hunterNeedsAuto = computed(() => false)
 
 // last_error 也算：「没有可用代理」这类错误不产生探测记录，只写 last_error。
 const hunterErrored = computed(

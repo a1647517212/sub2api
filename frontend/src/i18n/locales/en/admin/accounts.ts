@@ -735,7 +735,7 @@ export default {
         turnStateOverrideConfigured: 'Models with a ticket: {models}',
         turnStateHunter: '292 hunter',
         turnStateHunterDesc:
-          'Shortly before the live ticket expires, open fresh sessions through the selected proxies until a 292 is minted, then pool it for automatic takeover. Probes hang up as soon as the response headers arrive; the main cost is the input tokens of each probe (including the model base prompt). While the hunter is on, every session gets the pooled ticket. Hourly cap applies; models without real traffic inside the idle window are not hunted. Every probe opens a new proxy connection, so webshare -rotate endpoints change exit per probe; other proxies are treated as fixed exits: the exit IP is resolved before probing, each exit is probed once, and an exit that minted 312 is left alone for 7 days.',
+          'Shortly before a ticket would have expired, open fresh sessions through the selected proxies until a 292 is minted, then record it. Probes hang up as soon as the response headers arrive; the main cost is the input tokens of each probe (including the model base prompt). Hunter tickets are not injected into real traffic, and manual turn-state override is gone. Hourly cap applies; models without real traffic inside the idle window are not hunted. Every probe opens a new proxy connection, so webshare -rotate endpoints change exit per probe; other proxies are treated as fixed exits: the exit IP is resolved before probing, each exit is probed once, and an exit that minted 312 is left alone for 7 days.',
         turnStateHunterNeedsAuto: 'Enable automatic takeover first, otherwise the hunter does not run',
         turnStateHunterInvalid: 'With the hunter enabled, pick 1–8 models (or tick auto) and 1–64 proxies',
         turnStateHunterAutoModels: 'Pick models from real traffic automatically (every model with real requests inside the idle window that upstream has minted a turn-state for is hunted; image models are excluded; manual picks above are ignored)',
@@ -753,7 +753,7 @@ export default {
           'When set, every 200 probe is recorded under this key through the standard usage path (type "Hunter probe", billed normally, bumps last-used); input tokens are estimated locally (base prompt included), output is always 0. Use a dedicated key: probes consume its quota/rate limits, and subscription groups need an active subscription.',
         turnStateHunterHold: 'Pause scheduling while degraded',
         turnStateHunterHoldDesc:
-          'When a hunted model has no injectable 292, pause that model on this account for one idle window (idle_minutes) and fail the request over (503 if no other account); after expiry the next request re-pauses it if still no ticket, and a new ticket resumes it immediately. Other models are unaffected; a model nobody requests anymore simply expires.',
+          'Kept for existing configs. Real requests are no longer rewritten or paused for a missing turn-state; the hunter only probes and records.',
         turnStateRecovery: 'Degradation recovery probe',
         turnStateRecoveryDesc:
           "Probes through the account's own exit at randomized intervals; a streak of healthy 292 mints marks the account as recovered, while the same number of consecutive failures starts a cooldown. Independent of the hunter (works with the hunter off), it only records a marker and a log line and never changes any setting. Probing stops once marked, and a natural 312 from real traffic clears the marker.",

@@ -2458,70 +2458,8 @@
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div v-if="accountSupportsTurnStateOverride" class="space-y-3">
-          <div class="flex items-center justify-between gap-4">
-            <div class="min-w-0">
-              <label class="input-label mb-0">{{ t('admin.accounts.openai.turnStateAuto') }}</label>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.accounts.openai.turnStateAutoDesc') }}
-              </p>
-            </div>
-            <input
-              v-model="openAITurnStateAuto"
-              data-testid="edit-openai-turn-state-auto"
-              type="checkbox"
-              class="h-4 w-4 flex-shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-            />
-          </div>
-          <div>
-            <label class="input-label">{{ t('admin.accounts.openai.turnStateOverride') }}</label>
-            <p class="input-hint">{{ t('admin.accounts.openai.turnStateOverrideDesc') }}</p>
-            <p
-              v-if="openAITurnStateAuto"
-              data-testid="edit-openai-turn-state-auto-banner"
-              class="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-            >
-              {{ t('admin.accounts.openai.turnStateAutoTakeover') }}
-            </p>
-            <select
-              v-model="turnStateSelectedModel"
-              data-testid="edit-openai-turn-state-model"
-              :disabled="openAITurnStateAuto"
-              @focus="ensureTurnStateModelOptions"
-              class="input mb-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <option v-if="!turnStateModelOptions.length" value="">
-                {{ t('admin.accounts.openai.turnStateModelsEmpty') }}
-              </option>
-              <option v-for="m in turnStateModelOptions" :key="m" :value="m">
-                {{ openAITurnStateOverrides[m] ? `${m} ●` : m }}
-              </option>
-            </select>
-            <textarea
-              v-model="turnStateSelectedBlob"
-              rows="3"
-              spellcheck="false"
-              :disabled="openAITurnStateAuto || !turnStateSelectedModel"
-              class="input font-mono text-xs disabled:cursor-not-allowed disabled:opacity-60"
-              :placeholder="t('admin.accounts.openai.turnStateOverridePlaceholder')"
-            ></textarea>
-            <p
-              v-if="turnStateSelectedBlob.trim()"
-              class="mt-1 text-xs"
-              :class="openAITurnStateOverrideExpired
-                ? 'text-red-600 dark:text-red-400'
-                : openAITurnStateOverrideHealthy
-                  ? 'text-green-600 dark:text-green-400'
-                  : 'text-gray-500 dark:text-gray-400'"
-            >
-              {{ t('admin.accounts.openai.turnStateOverrideLength', { n: openAITurnStateOverrideLength }) }}
-              <span v-if="openAITurnStateOverrideValidity"> · {{ openAITurnStateOverrideValidity }}</span>
-            </p>
-            <p v-if="turnStateConfiguredModels.length" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.openai.turnStateOverrideConfigured', { models: turnStateConfiguredModels.join(', ') }) }}
-            </p>
-          </div>
           <!-- 292 猎手：只对直连 ChatGPT 的 oauth / setup-token 账号开放（cpr 的出口由
-               codex-proxy-rs 决定，换代理换不到出口）。依赖自动接管：票只入池不注入等于白猎。 -->
+               codex-proxy-rs 决定，换代理换不到出口）。不再依赖自动接管，也不再把猎到的票注入真实流量。 -->
           <div v-if="accountSupportsTurnStateHunter" class="space-y-2" data-testid="edit-openai-turn-state-hunter-section">
             <div class="flex items-center justify-between gap-4">
               <div class="min-w-0">
@@ -2534,17 +2472,9 @@
                 v-model="openAITurnStateHunter.enabled"
                 data-testid="edit-openai-turn-state-hunter"
                 type="checkbox"
-                :disabled="!openAITurnStateAuto"
-                class="h-4 w-4 flex-shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-60"
+                class="h-4 w-4 flex-shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
               />
             </div>
-            <p
-              v-if="!openAITurnStateAuto"
-              data-testid="edit-openai-turn-state-hunter-needs-auto"
-              class="text-xs text-amber-600 dark:text-amber-400"
-            >
-              {{ t('admin.accounts.openai.turnStateHunterNeedsAuto') }}
-            </p>
             <div v-if="openAITurnStateHunter.enabled" class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div>
                 <label class="input-label text-xs">{{ t('admin.accounts.openai.turnStateHunterModels') }}</label>
@@ -3466,12 +3396,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
-import {
-  cprOutboundProxy as readCPROutboundProxy,
-  decodeTurnState,
-  isTurnStateHealthy,
-  TURN_STATE_DEFAULT_TTL_MINUTES
-} from '@/utils/turnState'
+import { cprOutboundProxy as readCPROutboundProxy } from '@/utils/turnState'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -3993,49 +3918,13 @@ const upstreamBillingRateSyncEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
 // 上游ID：直接上游声明请求标识的响应头名，留空不记录。
 const upstreamRequestIdHeader = ref('')
-// Codex 回合状态覆写：按模型存的 {模型: blob}。turn-state 绑死在铸它的那个模型上，
-// blob 本身是密文（信封里只有铸造时间戳），系统无从得知它来自哪个模型，只能由管理员
-// 在这里指定。本次请求的模型没配票就不注入——没有「不限模型」这种兜底。
-const openAITurnStateOverrides = ref<Record<string, string>>({})
-const readOpenAITurnStateOverrides = (extra: unknown): Record<string, string> => {
-  const raw = (extra as Record<string, unknown> | undefined)?.openai_turn_state_override
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-  const out: Record<string, string> = {}
-  for (const [model, blob] of Object.entries(raw as Record<string, unknown>)) {
-    if (model.trim() && typeof blob === 'string' && blob.trim()) out[model.trim()] = blob.trim()
-  }
-  return out
-}
-
-const turnStateSelectedModel = ref('')
-// 下拉数据走账号已有的 /models 接口（AccountTestModal 同款），并入已配票的模型：
-// 上游模型列表拿不到时，至少别让已配的票在界面上消失。
+// 猎手模型下拉走账号已有的 /models 接口。懒加载：oauth 的 401 会把账号置错误。
 const turnStateUpstreamModels = ref<string[]>([])
-const turnStateConfiguredModels = computed(() => Object.keys(openAITurnStateOverrides.value).sort())
-const turnStateModelOptions = computed(() =>
-  Array.from(new Set([...turnStateUpstreamModels.value, ...turnStateConfiguredModels.value]))
-)
+const turnStateModelOptions = computed(() => turnStateUpstreamModels.value)
 
-const turnStateSelectedBlob = computed({
-  get: () => openAITurnStateOverrides.value[turnStateSelectedModel.value] ?? '',
-  set: (value: string) => {
-    const model = turnStateSelectedModel.value
-    if (!model) return
-    const next = { ...openAITurnStateOverrides.value }
-    // 清空即删除该模型的票，不要在表里留一个空串（后端也会剔掉，这里对齐即可）。
-    if (value.trim()) next[model] = value
-    else delete next[model]
-    openAITurnStateOverrides.value = next
-  }
-})
-
-// 请求序号：弹窗是常驻组件、在账号间复用，A→B 快速切换时 A 的晚到响应会覆盖 B 的
-// 列表，进而给 B 落一个 A 家的模型名——后端按模型精确匹配，那条票永远注不进去。
+// 请求序号：弹窗在账号间复用，晚到的响应不能覆盖当前账号的列表。
 let turnStateModelsRequestSeq = 0
 
-// 懒加载：这条接口对 oauth 账号有副作用（401 会走 handleCodexModelsManifestAccountAuthError，
-// 把账号置错误/临时不可调度）。挂在「打开编辑弹窗」上等于给每次改名都加一次探测，
-// 挂在下拉的首次聚焦上才对得起这个代价。
 const loadTurnStateModelOptions = async (accountId: number | undefined) => {
   const seq = ++turnStateModelsRequestSeq
   turnStateUpstreamModels.value = []
@@ -4045,13 +3934,7 @@ const loadTurnStateModelOptions = async (accountId: number | undefined) => {
     if (seq !== turnStateModelsRequestSeq) return
     turnStateUpstreamModels.value = models.map((m) => m.id)
   } catch {
-    // 拉不到就只列已配票的模型——这个下拉不该因为一次接口失败变成死界面。
     if (seq !== turnStateModelsRequestSeq) return
-  }
-  // 没配过票的账号选不中任何模型，输入框会一直是灰的。列表一到就落到第一个上，
-  // 否则「想配第一条票」这条最常见的路径根本走不通。
-  if (!turnStateSelectedModel.value) {
-    turnStateSelectedModel.value = turnStateModelOptions.value[0] ?? ''
   }
 }
 
@@ -4062,47 +3945,6 @@ const ensureTurnStateModelOptions = () => {
   void loadTurnStateModelOptions(props.account?.id)
 }
 
-const openAITurnStateOverrideLength = computed(() => turnStateSelectedBlob.value.trim().length)
-
-/**
- * 手填的这条是不是落在正常形态上。走 isTurnStateHealthy 而不是比某个字符数：
- * 后者写死 individual 的 292，team 号用户粘一条合法的 332 拿不到绿色确认，会停在
- * 灰色「未知」——同一条 blob 在账号列表里是满血、在这里却说不出话，三处口径不一。
- * 块数判据也不受 base64 padding 影响。
- */
-const openAITurnStateOverrideHealthy = computed(() =>
-  isTurnStateHealthy(turnStateSelectedBlob.value.trim())
-)
-
-// 手填值与候选池同一条 1 小时有效期，过期后后端直接不注入。不显示剩余有效期的话，
-// 「配了但不生效」就完全不可见——这是最难排查的那种失败。
-const openAITurnStateOverrideEnvelope = computed(() =>
-  decodeTurnState(turnStateSelectedBlob.value.trim())
-)
-const openAITurnStateOverrideExpiresAt = computed(() => {
-  const env = openAITurnStateOverrideEnvelope.value
-  if (!env) return null
-  return new Date(env.mintedAt.getTime() + TURN_STATE_DEFAULT_TTL_MINUTES * 60_000)
-})
-const openAITurnStateOverrideExpired = computed(() => {
-  const at = openAITurnStateOverrideExpiresAt.value
-  return at != null && at.getTime() <= Date.now()
-})
-const openAITurnStateOverrideValidity = computed(() => {
-  const env = openAITurnStateOverrideEnvelope.value
-  const at = openAITurnStateOverrideExpiresAt.value
-  if (!env || !at) return ''
-  if (openAITurnStateOverrideExpired.value) {
-    return t('admin.accounts.openai.turnStateOverrideExpired', {
-      minted: formatDateTime(env.mintedAt)
-    })
-  }
-  return t('admin.accounts.openai.turnStateOverrideValidUntil', {
-    minutes: Math.max(1, Math.round((at.getTime() - Date.now()) / 60_000)),
-    expires: formatDateTime(at)
-  })
-})
-
 /**
  * cpr 账号在 CPR 侧绑的出站代理。只对 cpr 账号有值。
  *
@@ -4111,11 +3953,6 @@ const openAITurnStateOverrideValidity = computed(() => {
  * 读取与脱敏走共享的 readCPROutboundProxy（见 utils/turnState）。
  */
 const cprOutboundProxy = computed(() => readCPROutboundProxy(props.account))
-
-// 自动接管：开了之后手填值不再生效，由系统用候选池里最近一条 292 顶替 312。
-const openAITurnStateAuto = ref(false)
-const readOpenAITurnStateAuto = (extra: unknown): boolean =>
-  (extra as Record<string, unknown> | undefined)?.openai_turn_state_auto === true
 
 // 292 猎手（extra.openai_turn_state_hunter）。数值留空 = 后端默认；idle_minutes 填 -1 = 不设空闲门槛。
 // 只对直连 ChatGPT 的 oauth / setup-token 账号：cpr 的出口由 codex-proxy-rs 决定。
@@ -4845,13 +4682,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	mixedScheduling.value = extra?.mixed_scheduling === true
 	allowOverages.value = extra?.allow_overages === true
 	upstreamRequestIdHeader.value = readUpstreamRequestIdHeader(extra)
-	openAITurnStateOverrides.value = readOpenAITurnStateOverrides(extra)
-	openAITurnStateAuto.value = readOpenAITurnStateAuto(extra)
 	openAITurnStateHunter.value = readOpenAITurnStateHunter(extra)
 	openAITurnStateRecovery.value = readOpenAITurnStateRecovery(extra)
 	turnStateHunterProxiesLoaded.value = false
 	turnStateHunterProxies.value = []
-	turnStateSelectedModel.value = Object.keys(openAITurnStateOverrides.value).sort()[0] ?? ''
 	// 只重置懒加载闸，不在这里发请求：见 loadTurnStateModelOptions 的副作用说明。
 	turnStateModelsLoaded.value = false
 	turnStateUpstreamModels.value = []
@@ -6629,45 +6463,15 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    // turn-state 覆写表同样只在改动时写回，避免快照覆盖运行态键。
-    const nextTurnStateOverrides = readOpenAITurnStateOverrides({
-      openai_turn_state_override: openAITurnStateOverrides.value
-    })
-    const serializeTurnStateOverrides = (table: Record<string, string>) =>
-      JSON.stringify(Object.keys(table).sort().map((m) => [m, table[m]]))
-    // 库里若残留旧的单字符串形态，归一化后同样是空表，光比较归一化结果就「没变化」，
-    // 于是它被 extra 快照原样回传 —— 而后端只认对象形态。必须强制判为有变化，让这次
-    // 保存顺手把它清掉。
-    const storedTurnStateOverrideRaw = (props.account.extra as Record<string, unknown> | undefined)
-      ?.openai_turn_state_override
-    const storedTurnStateOverrideIsLegacy =
-      storedTurnStateOverrideRaw != null && typeof storedTurnStateOverrideRaw !== 'object'
-    if (
-      accountSupportsTurnStateOverride.value &&
-      (storedTurnStateOverrideIsLegacy ||
-        serializeTurnStateOverrides(nextTurnStateOverrides) !==
-          serializeTurnStateOverrides(readOpenAITurnStateOverrides(props.account.extra)))
-    ) {
+    // 自动接管和手填覆写已移除。保存时清掉残留键，避免旧配置继续被当成开启。
+    if (accountSupportsTurnStateOverride.value) {
       const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
-      const newExtra: Record<string, unknown> = { ...currentExtra }
-      if (Object.keys(nextTurnStateOverrides).length) {
-        newExtra.openai_turn_state_override = nextTurnStateOverrides
-      } else {
+      if ('openai_turn_state_override' in currentExtra || 'openai_turn_state_auto' in currentExtra) {
+        const newExtra: Record<string, unknown> = { ...currentExtra }
         delete newExtra.openai_turn_state_override
-      }
-      updatePayload.extra = newExtra
-    }
-
-    // 自动接管开关：同样只在改动时写回。候选池等运行态键由后端维护，这里不碰。
-    if (accountSupportsTurnStateOverride.value && openAITurnStateAuto.value !== readOpenAITurnStateAuto(props.account.extra)) {
-      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
-      const newExtra: Record<string, unknown> = { ...currentExtra }
-      if (openAITurnStateAuto.value) {
-        newExtra.openai_turn_state_auto = true
-      } else {
         delete newExtra.openai_turn_state_auto
+        updatePayload.extra = newExtra
       }
-      updatePayload.extra = newExtra
     }
 
     // 猎手配置：同样只在改动时写回。运行态键 openai_turn_state_hunt 由猎手维护，这里不碰。
