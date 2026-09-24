@@ -1,7 +1,7 @@
-name: Sync upstream into klno
+name: Sync upstream into zpj
 
-# 上游 Wei-Shaw/sub2api 发新版标签后，把 klno 分支 rebase 到新标签、跑定向测试、
-# 打 <上游标签>-klno.N 标签并触发 release.yml 出包；同时检查 codex-rs 身份相关源码是否变动。
+# 上游 Wei-Shaw/sub2api 发新版标签后，把 zpj 分支 rebase 到新标签、跑定向测试、
+# 打 <上游标签>-zpj.N 标签并触发 release.yml 出包；同时检查 codex-rs 身份相关源码是否变动。
 # 冲突、测试失败、codex-rs 漂移都只让 run 失败（GitHub 邮件通知），不推送任何东西；fork 未开 issues。
 # 所以漂移检查必须排在推分支/推标签/触发 release 之前——排在后面等于包已经发出去才报错。
 # 每次运行还会把默认分支 main 重建成 upstream/main + 本文件：GitHub 的定时 workflow 只从默认
@@ -23,7 +23,7 @@ permissions:
 
 env:
   UPSTREAM_REPO: Wei-Shaw/sub2api
-  FORK_BRANCH: klno
+  FORK_BRANCH: zpj
   CODEX_PINNED_COMMIT: e763730
   CODEX_IDENTITY_PATHS: >-
     codex-rs/codex-api/src/requests/headers.rs
@@ -55,12 +55,12 @@ jobs:
           else
             latest=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           fi
-          base=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${FORK_BRANCH}" | sed -E 's/-klno\.[0-9]+$//')
+          base=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${FORK_BRANCH}" | sed -E 's/-(klno|zpj)\.[0-9]+$//')
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
-          echo "upstream latest=$latest, klno base=$base"
+          echo "upstream latest=$latest, zpj base=$base"
 
-      - name: Rebase klno onto upstream tag
+      - name: Rebase zpj onto upstream tag
         id: rebase
         if: steps.up.outputs.latest != steps.up.outputs.base
         run: |
@@ -78,7 +78,7 @@ jobs:
       - name: Fail on conflict
         if: steps.rebase.outputs.conflict == 'true'
         run: |
-          echo "::error title=sync-upstream conflict::rebase klno (${{ steps.up.outputs.base }}) onto ${{ steps.up.outputs.latest }} 冲突，需要人工处理，冲突文件见本步骤日志"
+          echo "::error title=sync-upstream conflict::rebase zpj (${{ steps.up.outputs.base }}) onto ${{ steps.up.outputs.latest }} 冲突，需要人工处理，冲突文件见本步骤日志"
           cat /tmp/conflicts.txt
           exit 1
 
@@ -119,9 +119,9 @@ jobs:
           set -euo pipefail
           git push --force-with-lease origin "${FORK_BRANCH}"
           n=1
-          while git ls-remote --exit-code --tags origin "refs/tags/${{ steps.up.outputs.latest }}-klno.${n}" >/dev/null 2>&1; do n=$((n+1)); done
-          tag="${{ steps.up.outputs.latest }}-klno.${n}"
-          git tag -a "$tag" -m "klno build on upstream ${{ steps.up.outputs.latest }}"
+          while git ls-remote --exit-code --tags origin "refs/tags/${{ steps.up.outputs.latest }}-zpj.${n}" >/dev/null 2>&1; do n=$((n+1)); done
+          tag="${{ steps.up.outputs.latest }}-zpj.${n}"
+          git tag -a "$tag" -m "zpj build on upstream ${{ steps.up.outputs.latest }}"
           git push origin "$tag"
           # GITHUB_TOKEN 推的 tag 不会触发 release.yml，改用 workflow_dispatch；必须显式 --repo，否则 gh 会从 upstream remote 解析成上游仓库（403）
           gh workflow run release.yml --repo "${GITHUB_REPOSITORY}" --ref "$tag" -f tag="$tag"
