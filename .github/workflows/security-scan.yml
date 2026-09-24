@@ -28,10 +28,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           # schedule 只能从默认分支触发，而默认分支 main 是 sync-upstream 的 cron
-          # 宿主，内容是 upstream/main —— 扫它等于扫上游的依赖。klno 的 go.mod 已
-          # 经分叉（klno.4 把 grpc 提到 v1.83.2），周扫必须显式指向 klno。
+          # 宿主，内容是 upstream/main —— 扫它等于扫上游的依赖。长期维护分支是 zpj，
+          # 周扫必须显式指向 zpj，不要再扫已经停更的 klno。
           # 留空 = actions/checkout 的默认行为，push / pull_request 不受影响。
-          ref: ${{ github.event_name == 'schedule' && 'klno' || '' }}
+          ref: ${{ github.event_name == 'schedule' && 'zpj' || '' }}
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'schedule' && 'klno' || '' }}
+          ref: ${{ github.event_name == 'schedule' && 'zpj' || '' }}
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
