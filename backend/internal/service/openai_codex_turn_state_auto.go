@@ -14,20 +14,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
-// 自动接管 turn-state：检测到某个 session 落在 312（降智）后，把该账号最近一条
-// 有效的 292 注入该 session 的后续请求；票一直用到自铸造起 1 小时自然过期。
-//
-// 候选失效只有一个来源——上游以 invalid_encrypted_content 拒绝这条 blob。曾经
-// 「注入 292 后上游仍铸出 312」也算失效，那个判据是错的：实测 578 条现网样本里新铸
-// 的块数由账号当时的权重决定，与请求带的那张票无关（「10 块 → 11 块」一次都没发生
-// 过），所以上游铸 312 是账号权重的读数，不是这张票坏了的证据。而 fail_threshold
-// 默认是 1，按那个判据注入一次就报废一张票，池子几分钟见底。
-// 候选全部失效则停掉账号调度并写明原因。
-//
-// 为什么只在「已知 312 的 session」上注入，而不是无条件注入——实测 4262 条
-// /responses：请求不带 turn-state 时 87.1% 会铸出新 blob，带了则只有 8.0%。
-// 注入会把「能观测到长度」的机会压掉一个数量级，所以只在确实需要的 session 上注入，
-// 其余路径保持真客户端形态（一轮首帧不带、后续带）。
+// 保留 turn-state 候选池、自然铸造观测及历史上下文的兼容清理。
+// 自动接管、手填注入及其 session 判定缓存已移除；真实出站不从候选池取票。
 const (
 	// openAITurnStateAutoExtraKey 总开关。开启后手填覆写完全失效（系统接管）。
 	openAITurnStateAutoExtraKey = "openai_turn_state_auto"
@@ -50,9 +38,6 @@ const (
 	defaultOpenAITurnStateFailThreshold = 1
 	// defaultOpenAITurnStateStaleMinutes 是候选有效期：292 自铸造起可用 1 小时。
 	defaultOpenAITurnStateStaleMinutes = 60
-	// openAITurnStateSessionTTL 是 session 长度状态的存活期。turn-state blob 实测
-	// 存活中位 2.6 分钟、最长 33 分钟，1 小时足够覆盖一个会话的活跃期。
-	openAITurnStateSessionTTL = time.Hour
 )
 
 // turn-state 覆写来源，落 usage_logs.turn_state_source。
@@ -117,15 +102,6 @@ func (c openAITurnStateCandidate) alive(model string) bool {
 	// 两端都来自 SetOpsUpstreamModel 的同一份值，目前恒等；上游哪天改了模型名的
 	// 大小写，精确比较会让整个功能静默失效，而不是报错。
 	return strings.EqualFold(c.Model, model)
-}
-
-// openAITurnStateSessionState 记录某个 session 是否需要注入。
-//
-// 只有「未注入请求」铸出的 blob 才更新它：注入生效后上游会开始铸 292，若拿它回写
-// 就会把 needsInjection 抹掉、下一轮又变回 312，在两个状态间来回跳。
-type openAITurnStateSessionState struct {
-	needsInjection bool
-	expiresAt      time.Time
 }
 
 // openAITurnStatePoolMu 按账号串行化候选池读改写。extra 是 JSONB key 级合并，
@@ -234,123 +210,11 @@ func (c openAITurnStateCandidate) expired(ttl time.Duration, now time.Time) bool
 	return !c.MintedAt.IsZero() && !now.Before(c.MintedAt.Add(ttl))
 }
 
-// openAITurnStateSessionlessKey 是客户端不发 session-id 时的占位会话名。
-//
-// 不能就此返回空键：空键既查不到判定、也记不下判定，自动接管对 curl 和不发该头的
-// 第三方客户端就等于根本没开，还不报错不打日志。退化成「账号 + 模型」粒度后功能
-// 覆盖全部客户端，代价是这些请求共用一个降智判定——跨会话注入实测有效，这个代价
-// 不成立。用不可能与真实 session id 相撞的字面量。
-const openAITurnStateSessionlessKey = "\x00no-session"
-
-// openAITurnStateSessionKey 把 session 状态按「凭证域 + 会话 + 模型」分域。
-//
-// 分账号：同一个 session id 在不同账号下是两段独立的上游会话，混用会让 A 账号的
-// 降智判定作用到 B 账号。分模型：turn-state 与模型强绑定，同一 session 换模型就是
-// 另一张票，A 模型被判降智不代表 B 模型也要注入。
-func openAITurnStateSessionKey(c *gin.Context, account *Account, sessionID string) string {
-	if sessionID = strings.TrimSpace(sessionID); sessionID == "" {
-		sessionID = openAITurnStateSessionlessKey
-	}
-	owner := openAICodexTurnStateOwner(c, account)
-	if owner == "" {
-		return ""
-	}
-	model := openAITurnStateRequestModel(c)
-	if model == "" {
-		return ""
-	}
-	return owner + "\x1f" + sessionID + "\x1f" + model
-}
-
-// openAITurnStateRequestSessionID 取客户端会话标识。两种形态都要认：仓库里其它读会话头
-// 的地方全都做双形态回退，只认连字符形态会让只发 session_id 的客户端静默失去这个功能。
-func openAITurnStateRequestSessionID(c *gin.Context) string {
-	if c == nil || c.Request == nil {
-		return ""
-	}
-	return extractClientSessionID(c.Request.Header)
-}
-
-// sessionNeedsTurnStateInjection 查该 session 是否已被判定为降智。
-func (s *OpenAIGatewayService) sessionNeedsTurnStateInjection(key string) bool {
-	if s == nil || key == "" {
-		return false
-	}
-	raw, ok := s.openaiTurnStateSessions.Load(key)
-	if !ok {
-		return false
-	}
-	st, ok := raw.(openAITurnStateSessionState)
-	if !ok || (!st.expiresAt.IsZero() && time.Now().After(st.expiresAt)) {
-		s.openaiTurnStateSessions.Delete(key)
-		return false
-	}
-	return st.needsInjection
-}
-
-func (s *OpenAIGatewayService) setSessionTurnStateNeedsInjection(key string, needs bool) {
-	if s == nil || key == "" {
-		return
-	}
-	s.openaiTurnStateSessions.Store(key, openAITurnStateSessionState{
-		needsInjection: needs,
-		expiresAt:      time.Now().Add(openAITurnStateSessionTTL),
-	})
-	s.sweepOpenAITurnStateSessions()
-}
-
-// sweepOpenAITurnStateSessions 与 turn-state 溯源表同型的机会式清扫。
-func (s *OpenAIGatewayService) sweepOpenAITurnStateSessions() {
-	if s.openaiTurnStateSessionWrites.Add(1)%256 != 0 {
-		return
-	}
-	now := time.Now()
-	s.openaiTurnStateSessions.Range(func(key, value any) bool {
-		st, ok := value.(openAITurnStateSessionState)
-		if !ok || (!st.expiresAt.IsZero() && now.After(st.expiresAt)) {
-			s.openaiTurnStateSessions.Delete(key)
-		}
-		return true
-	})
-}
-
-// resolveOpenAITurnStateOverride 决定本次出站带什么 turn-state 覆写值。
-//
-// 优先级：自动接管 > 手填。开了自动就完全忽略 extra.openai_turn_state_override
-// （值保留不删，关掉开关即恢复）——这是用户要求的「系统接管」语义。
-//
-// 返回空串表示不改写出站头。
-func (s *OpenAIGatewayService) resolveOpenAITurnStateOverride(c *gin.Context, account *Account) (string, string) {
-	// 自动接管和手填覆写已移除：不再把 292 注入出站，也不再因此暂停账号。
-	// 指纹收敛只保留跨账号回带剥离（guardOpenAICodexTurnState*）。
-	return "", ""
-}
-
-// markOpenAITurnStateInjected 把本次覆写值与来源存进请求上下文。
-// 手填与自动接管都要存：使用记录读来源，WS 帧填充读值判断「本次是不是覆写」
-// （applyCodexWSFrameWireProfile），响应侧读值做失效判定。
-func markOpenAITurnStateInjected(c *gin.Context, blob, source string) {
-	if c == nil || blob == "" {
-		return
-	}
-	c.Set(ctxKeyTurnStateInjected, blob)
-	c.Set(ctxKeyTurnStateSource, source)
-}
-
 // markOpenAITurnStateAutoSkipped 声明本次上下文不参与自动接管（WS 入口调用）。
 func markOpenAITurnStateAutoSkipped(c *gin.Context) {
 	if c != nil {
 		c.Set(ctxKeyTurnStateSkipAuto, true)
 	}
-}
-
-func openAITurnStateAutoSkipped(c *gin.Context) bool {
-	if c == nil {
-		return false
-	}
-	skip, _ := c.Get(ctxKeyTurnStateSkipAuto)
-	flag, _ := skip.(bool)
-	return flag
 }
 
 // clearOpenAITurnStateInjected 清掉上一次 failover attempt 留下的注入标记。

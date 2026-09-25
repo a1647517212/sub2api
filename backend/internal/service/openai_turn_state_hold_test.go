@@ -25,76 +25,6 @@ func markHeld(account *Account, until time.Time) {
 	setAccountModelRateLimitSnapshot(account, hunterTestModel, until, openAITurnStateHoldLimitReason, time.Now())
 }
 
-// TestOpenAITurnStateHoldBlocksUnfilledHuntedModel 钉住注入点：猎手管的模型拿不出票 →
-// 该模型停一个空闲窗口（model_rate_limits，reason 标本功能）+ 换号错误；换到下一个账号时
-// 拦截标记要清掉；停着期间再来的请求只换号不再写库；到期后再来的请求重新拉起。
-func TestOpenAITurnStateHoldBlocksUnfilledHuntedModel(t *testing.T) {
-	repo := newTurnStateAutoRepo()
-	account := hunterTestAccount(holdHunterConfig(map[string]any{"idle_minutes": 30}))
-	repo.latest = account
-	gw := &OpenAIGatewayService{accountRepo: repo}
-
-	c := turnStateAutoCtxModel("real", hunterTestModel)
-	gw.applyOpenAICodexTurnStateOverrideHeader(c, account, http.Header{})
-	require.NoError(t, openAITurnStateHoldError(c), "请求路径不再因缺票暂停")
-	gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
-
-	var failover *UpstreamFailoverError
-	require.ErrorAs(t, openAITurnStateHoldError(c), &failover)
-	require.Equal(t, OpenAITurnStateHoldReason, failover.Reason)
-	require.True(t, failover.ShouldRetryNextAccount(), "本账号排除、下一个账号继续")
-	require.Equal(t, http.StatusServiceUnavailable, failover.ClientStatusCode)
-	require.Contains(t, failover.ClientMessage, hunterTestModel)
-	require.Equal(t, []string{hunterTestModel}, repo.holds)
-	resetAt, ok := openAITurnStateHoldResetAt(account, hunterTestModel)
-	require.True(t, ok)
-	require.WithinDuration(t, time.Now().Add(30*time.Minute), resetAt, time.Minute, "停一个空闲窗口，不是 24 小时")
-	require.True(t, openAITurnStateModelHeld(account, hunterTestModel, time.Now()))
-	require.Nil(t, account.TempUnschedulableUntil, "停的是模型不是账号")
-	require.True(t, gw.openAITurnStateTrafficSince(account.ID, hunterTestModel, time.Now().Add(-time.Minute)),
-		"被拦下的请求也是真实流量：不记水位的话空闲门槛会把猎手刹住，暂停就永远解不开")
-
-	// 停着期间再来一条：只换号，不再写库。
-	c2 := turnStateAutoCtxModel("real-2", hunterTestModel)
-	gw.holdOpenAITurnStateIfUnfilled(c2, account, hunterTestModel)
-	require.Error(t, openAITurnStateHoldError(c2))
-	require.Len(t, repo.holds, 1)
-
-	// 同一个 gin 上下文换到下一个账号（没开暂停）：上一轮的拦截标记必须先清。
-	other := hunterTestAccount(hunterConfig(nil))
-	other.ID = 9202
-	gw.applyOpenAICodexTurnStateOverrideHeader(c, other, http.Header{})
-	require.NoError(t, openAITurnStateHoldError(c))
-
-	// 到期后再来一条：还缺票就再停一次（有人用就一直处于「停着 → 到期 → 再停」）。
-	markHeld(account, time.Now().Add(-time.Second))
-	c3 := turnStateAutoCtxModel("real-3", hunterTestModel)
-	gw.holdOpenAITurnStateIfUnfilled(c3, account, hunterTestModel)
-	require.Error(t, openAITurnStateHoldError(c3))
-	require.Len(t, repo.holds, 2)
-	require.True(t, openAITurnStateModelHeld(account, hunterTestModel, time.Now()))
-}
-
-// TestOpenAITurnStateHoldIsModelScoped 钉住这次改法的核心：sol 缺票只停 sol，调度器对 astra
-// 照常把这个账号算在内；账号级的可调度性不动。
-func TestOpenAITurnStateHoldIsModelScoped(t *testing.T) {
-	repo := newTurnStateAutoRepo()
-	account := hunterTestAccount(holdHunterConfig(map[string]any{"models": []any{"gpt-5.6-sol", hunterTestModel}}))
-	account.Schedulable = true
-	repo.latest = account
-	gw := &OpenAIGatewayService{accountRepo: repo}
-	require.True(t, account.IsSchedulable())
-
-	gw.holdOpenAITurnStateIfUnfilled(turnStateAutoCtxModel("sol", "gpt-5.6-sol"), account, "gpt-5.6-sol")
-	require.Equal(t, []string{"gpt-5.6-sol"}, repo.holds)
-
-	ctx := context.Background()
-	require.False(t, account.IsSchedulableForModelWithContext(ctx, "gpt-5.6-sol"), "sol 在本账号上停着")
-	require.True(t, account.IsSchedulableForModelWithContext(ctx, hunterTestModel), "astra 不连坐")
-	require.True(t, account.IsSchedulable(), "账号本身没停")
-	require.Equal(t, []string{"gpt-5.6-sol"}, openAITurnStateHeldModels(account, time.Now()))
-}
-
 // TestOpenAITurnStateHoldSkips 列出不该拦的情形：一条都不能写库。
 func TestOpenAITurnStateHoldSkips(t *testing.T) {
 	now := time.Now().UTC()
@@ -144,39 +74,6 @@ func TestOpenAITurnStateHoldSkips(t *testing.T) {
 			require.False(t, openAITurnStateModelHeld(account, hunterTestModel, time.Now()))
 		})
 	}
-}
-
-// TestOpenAITurnStateHoldIgnoresStaleOrForeignEcho 钉住回带判定的两道闸：过期的回带和
-// 异账号铸的回带都不能当放行依据。
-func TestOpenAITurnStateHoldIgnoresStaleOrForeignEcho(t *testing.T) {
-	now := time.Now().UTC()
-	t.Run("过期回带", func(t *testing.T) {
-		repo := newTurnStateAutoRepo()
-		account := hunterTestAccount(holdHunterConfig(nil))
-		repo.latest = account
-		gw := &OpenAIGatewayService{accountRepo: repo}
-		c := turnStateAutoCtxModel("real", hunterTestModel)
-		c.Request.Header.Set(openAICodexTurnStateHeader, turnStateFernetBlob(now.Add(-2*time.Hour), openAIHealthyTurnStateBlocks))
-		gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
-		require.Error(t, openAITurnStateHoldError(c))
-		require.Len(t, repo.holds, 1)
-	})
-	t.Run("异账号铸的回带", func(t *testing.T) {
-		repo := newTurnStateAutoRepo()
-		account := hunterTestAccount(holdHunterConfig(nil))
-		repo.latest = account
-		gw := &OpenAIGatewayService{accountRepo: repo}
-		blob := turnStateFernetBlob(now, openAIHealthyTurnStateBlocks)
-		other := hunterTestAccount(hunterConfig(nil))
-		other.ID = 9202
-		other.Credentials = map[string]any{"access_token": "other-token", "chatgpt_account_id": "other-workspace"}
-		gw.noteOpenAICodexTurnStateOrigin(turnStateAutoCtxModel("prev", hunterTestModel), other, blob)
-		c := turnStateAutoCtxModel("real", hunterTestModel)
-		c.Request.Header.Set(openAICodexTurnStateHeader, blob)
-		gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
-		require.Error(t, openAITurnStateHoldError(c))
-		require.Len(t, repo.holds, 1)
-	})
 }
 
 // TestOpenAITurnStateHoldReleasedWhenHunterHits 钉住主流程：停着的模型猎到 292 入池，同一
@@ -358,14 +255,6 @@ func TestOpenAITurnStateHeldModelsIgnoreOtherReasons(t *testing.T) {
 	require.Empty(t, openAITurnStateHeldModels(nil, now))
 }
 
-// TestOpenAITurnStateHoldTTLFollowsIdleWindow 钉住暂停时长 = 空闲窗口；门槛关掉时取默认 1 小时。
-func TestOpenAITurnStateHoldTTLFollowsIdleWindow(t *testing.T) {
-	cfg, _ := readOpenAITurnStateHunterConfig(hunterTestAccount(holdHunterConfig(map[string]any{"idle_minutes": 45})))
-	require.Equal(t, 45*time.Minute, openAITurnStateHoldTTL(cfg))
-	cfg, _ = readOpenAITurnStateHunterConfig(hunterTestAccount(holdHunterConfig(nil))) // idle_minutes=-1：门槛关
-	require.Equal(t, openAITurnStateHoldDefaultTTL, openAITurnStateHoldTTL(cfg))
-}
-
 // TestOpenAITurnStateHoldKeyMatchesAliasSpelling 钉住评审 S2：暂停按规范化后的上游模型名写，
 // 客户端换个写法（大小写、openai/ 前缀）请求同一个模型，调度器也要认出它停着。
 func TestOpenAITurnStateHoldKeyMatchesAliasSpelling(t *testing.T) {
@@ -398,22 +287,4 @@ func TestOpenAITurnStateHoldReleaseSkipsWhenAlreadyCleared(t *testing.T) {
 	resetAt := h.account.modelRateLimitResetAt(hunterTestModel)
 	require.NotNil(t, resetAt)
 	require.WithinDuration(t, now.Add(time.Hour), *resetAt, time.Minute, "spark 冷却原样保留")
-}
-
-// TestOpenAITurnStateAutoModeHuntsEverHeldModelAfterRestart 钉住评审 S1：自动定模型下，暂停到期
-// 或被清掉之后、重启（铸造记忆为空、池空）再来一条请求，仍要算「猎手在管」——否则既不注入也
-// 不拦，直接裸奔。留在 model_rate_limits 里的本功能条目就是持久化的记忆。
-func TestOpenAITurnStateAutoModeHuntsEverHeldModelAfterRestart(t *testing.T) {
-	repo := newTurnStateAutoRepo()
-	account := hunterTestAccount(holdHunterConfig(map[string]any{"auto_models": true}))
-	setAccountModelRateLimitSnapshot(account, hunterTestModel, time.Now().Add(-time.Minute), openAITurnStateHoldLimitReason, time.Now())
-	repo.latest = account
-	gw := &OpenAIGatewayService{accountRepo: repo} // 新进程：没有铸造记忆
-
-	require.True(t, gw.openAITurnStateHuntedModel(account, hunterTestModel))
-	c := turnStateAutoCtxModel("real", hunterTestModel)
-	gw.holdOpenAITurnStateIfUnfilled(c, account, hunterTestModel)
-	require.Error(t, openAITurnStateHoldError(c), "到期后再来一条：再停一次，不裸奔")
-	require.Equal(t, []string{hunterTestModel}, repo.holds)
-	require.False(t, gw.openAITurnStateHuntedModel(account, "gpt-5.6-sol"), "没停过、没铸过的模型仍不算")
 }

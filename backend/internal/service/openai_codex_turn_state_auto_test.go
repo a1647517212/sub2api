@@ -219,7 +219,7 @@ func TestOpenAITurnStateAutoOnlyInjectsDegradedSessions(t *testing.T) {
 	}
 
 	// 没有 session 判定记录 → 不注入
-	override, source := svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess-A"), account)
+	override, source := outboundTurnStateForTest(svc, turnStateAutoCtx("sess-A"), account)
 	require.Empty(t, override, "未判定降智的 session 不注入")
 	require.Empty(t, source)
 
@@ -227,17 +227,17 @@ func TestOpenAITurnStateAutoOnlyInjectsDegradedSessions(t *testing.T) {
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx("sess-A"), account,
 		turnStateBlob(openAIDegradedTurnStateLen))
 
-	override, source = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess-A"), account)
+	override, source = outboundTurnStateForTest(svc, turnStateAutoCtx("sess-A"), account)
 	require.Empty(t, override, "自动接管已移除，判定降智后也不注入")
 	require.Empty(t, source)
 
 	// 另一个 session 不受影响
-	override, _ = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess-B"), account)
+	override, _ = outboundTurnStateForTest(svc, turnStateAutoCtx("sess-B"), account)
 	require.Empty(t, override, "降智判定按 session 分域，不外溢")
 
 	// 没带 session-id 的请求走占位域，它自己还没被判降智，所以也不注入
 	//（占位域本身能被判定，见 TestOpenAITurnStateSessionlessClientIsCovered）
-	override, _ = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx(""), account)
+	override, _ = outboundTurnStateForTest(svc, turnStateAutoCtx(""), account)
 	require.Empty(t, override)
 }
 
@@ -253,19 +253,19 @@ func TestOpenAITurnStateAutoBeatsManual(t *testing.T) {
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx("sess"), account,
 		turnStateBlob(openAIDegradedTurnStateLen))
 
-	override, source := svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess"), account)
+	override, source := outboundTurnStateForTest(svc, turnStateAutoCtx("sess"), account)
 	require.Empty(t, override, "自动接管已移除")
 	require.Empty(t, source)
 
 	// 候选池空时也不回退到手填——接管就是接管，回退会让「已接管」的说明变成谎话
 	account.Extra[openAITurnStatePoolExtraKey] = []any{}
-	override, source = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess"), account)
+	override, source = outboundTurnStateForTest(svc, turnStateAutoCtx("sess"), account)
 	require.Empty(t, override, "没有候选时不得回落到手填值")
 	require.Empty(t, source)
 
 	// 关掉开关，手填立刻恢复生效
 	delete(account.Extra, openAITurnStateAutoExtraKey)
-	override, source = svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess"), account)
+	override, source = outboundTurnStateForTest(svc, turnStateAutoCtx("sess"), account)
 	require.Empty(t, override, "手填覆写已移除")
 	require.Empty(t, source)
 }
@@ -284,7 +284,7 @@ func TestOpenAITurnStateAutoInjectedMintDoesNotResetSession(t *testing.T) {
 		turnStateBlob(openAIDegradedTurnStateLen))
 
 	c := turnStateAutoCtx("sess")
-	override, _ := svc.resolveOpenAITurnStateOverride(c, account)
+	override, _ := outboundTurnStateForTest(svc, c, account)
 	require.Empty(t, override, "自动接管已移除")
 	// 注入生效：上游改铸出另一条 292。它入池（见 TestOpenAITurnStateInjectedMintRefillsPool），
 	// 但不回写 session 判定——这两件事分开，本用例只钉后者。
@@ -352,9 +352,22 @@ func TestOpenAITurnStateSessionlessClientIsCovered(t *testing.T) {
 		"占位域仍按模型分域")
 }
 
+// 验证实际出站入口，不再调用已删除的注入决策器。
+func outboundTurnStateForTest(svc *OpenAIGatewayService, c *gin.Context, account *Account) (string, string) {
+	h := http.Header{}
+	svc.applyOpenAICodexTurnStateOverrideHeader(c, account, h)
+	return h.Get(openAICodexTurnStateHeader), OpenAITurnStateUsageSource(c)
+}
+
+// 构造历史请求上下文，验证兼容的观测/失效清理；生产代码不再写入注入标记。
+func stageLegacyTurnStateInjectionForTest(c *gin.Context, blob, source string) {
+	c.Set(ctxKeyTurnStateInjected, blob)
+	c.Set(ctxKeyTurnStateSource, source)
+}
+
 func mustResolve(t *testing.T, svc *OpenAIGatewayService, c *gin.Context, account *Account) string {
 	t.Helper()
-	override, _ := svc.resolveOpenAITurnStateOverride(c, account)
+	override, _ := outboundTurnStateForTest(svc, c, account)
 	return override
 }
 
@@ -446,7 +459,7 @@ func TestOpenAITurnStateExpiredCandidatesStayInPool(t *testing.T) {
 
 	// 新鲜的那条失败 → 池里还剩过期但未失效的一条 → 不该停账号。
 	c := turnStateAutoCtx("s")
-	markOpenAITurnStateInjected(c, fresh, turnStateSourceAuto)
+	stageLegacyTurnStateInjectionForTest(c, fresh, turnStateSourceAuto)
 	svc.recordOpenAITurnStateFailure(c, account, fresh)
 	require.Empty(t, repo.schedulable, "降级链还剩一格就不该停账号")
 
@@ -673,7 +686,7 @@ func TestOpenAITurnStateAutoIgnoresNonCodexAccounts(t *testing.T) {
 		turnStateBlob(openAIHealthyTurnStateLen))
 	require.Empty(t, repo.extraWrites, "非 Codex 账号不得写候选池")
 
-	override, source := svc.resolveOpenAITurnStateOverride(turnStateAutoCtx("sess"), apikey)
+	override, source := outboundTurnStateForTest(svc, turnStateAutoCtx("sess"), apikey)
 	require.Empty(t, override)
 	require.Empty(t, source)
 }
@@ -789,26 +802,12 @@ func TestOpenAITurnStateSessionKeyIsAccountScoped(t *testing.T) {
 	b.ID = 99
 	b.Extra = map[string]any{openAITurnStateAutoExtraKey: true, openAITurnStatePoolExtraKey: pool}
 
-	require.NotEqual(t,
-		openAITurnStateSessionKey(turnStateAutoCtx("same-sess"), a, "same-sess"),
-		openAITurnStateSessionKey(turnStateAutoCtx("same-sess"), b, "same-sess"),
-		"不同账号的同名 session 必须是不同的键")
-
 	// A 判定降智，B 的同名 session 不受影响
 	svc.observeOpenAITurnStateMint(turnStateAutoCtx("same-sess"), a,
 		turnStateBlob(openAIDegradedTurnStateLen))
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("same-sess"), a), "不再注入")
 	require.Empty(t, mustResolve(t, svc, turnStateAutoCtx("same-sess"), b),
 		"A 的降智判定不得外溢到 B")
-}
-
-// TestOpenAITurnStateSessionIDAcceptsUnderscoreHeader 钉住两种会话头形态都认。
-func TestOpenAITurnStateSessionIDAcceptsUnderscoreHeader(t *testing.T) {
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	c.Request.Header.Set("session_id", "下划线形态")
-	require.Equal(t, "下划线形态", openAITurnStateRequestSessionID(c),
-		"只发 session_id 的客户端不能静默失去这个功能")
 }
 
 // TestOpenAITurnStateFailureReadsFreshPool 钉住「不拿陈旧快照做读-改-写」：
@@ -837,7 +836,7 @@ func TestOpenAITurnStateFailureReadsFreshPool(t *testing.T) {
 	c := turnStateAutoCtx("sess")
 	svc.observeOpenAITurnStateMint(c, stale, turnStateBlob(openAIDegradedTurnStateLen))
 	require.Empty(t, mustResolve(t, svc, c, stale), "请求路径不再注入")
-	markOpenAITurnStateInjected(c, injected, turnStateSourceAuto)
+	stageLegacyTurnStateInjectionForTest(c, injected, turnStateSourceAuto)
 	// 失效记账仍读新鲜池：只有显式标过注入的拒绝才记到候选上。
 	svc.noteOpenAITurnStateRejected(c, stale)
 
@@ -915,7 +914,7 @@ func TestOpenAITurnStateRejectionDedupedPerContext(t *testing.T) {
 
 	c := turnStateAutoCtx("sess")
 	require.Empty(t, mustResolve(t, svc, c, account), "请求路径不再注入")
-	markOpenAITurnStateInjected(c, first, turnStateSourceAuto)
+	stageLegacyTurnStateInjectionForTest(c, first, turnStateSourceAuto)
 	svc.noteOpenAITurnStateRejected(c, account)
 	svc.noteOpenAITurnStateRejected(c, account) // 第二个调用点
 
@@ -1002,9 +1001,6 @@ func TestOpenAITurnStateObservedWithAutoDisabled(t *testing.T) {
 	// 删掉照样绿。这里同时喂上 session 降智判定和一张可用票，让 auto 门禁成为唯一变量。
 	// 放在最后做，因为往池里塞票会污染上面那几条「不得入池」的断言。
 	injectCtx := turnStateAutoCtx("sess")
-	key := openAITurnStateSessionKey(injectCtx, account, openAITurnStateRequestSessionID(injectCtx))
-	require.NotEmpty(t, key)
-	svc.setSessionTurnStateNeedsInjection(key, true)
 	account.Extra[openAITurnStatePoolExtraKey] = []any{
 		map[string]any{"model": turnStateTestModel, "blob": turnStateBlob(openAIHealthyTurnStateLen),
 			"minted_at": time.Now().UTC().Format(time.RFC3339)},
@@ -1096,7 +1092,7 @@ func TestOpenAITurnStateObservationIgnoresEchoedInjection(t *testing.T) {
 
 	c := turnStateAutoCtx("sess")
 	require.Empty(t, mustResolve(t, svc, c, account), "请求路径不再注入")
-	markOpenAITurnStateInjected(c, healthy, turnStateSourceAuto)
+	stageLegacyTurnStateInjectionForTest(c, healthy, turnStateSourceAuto)
 
 	// 上游把注入的那张 292 原样回带。形态观测不得把它当成「这个号现在铸 292」。
 	svc.observeOpenAITurnStateMint(c, account, healthy)

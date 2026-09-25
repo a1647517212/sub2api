@@ -12,25 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 降智暂停：猎手管的模型拿不出可注入的 292 时，把**这个模型**在本账号上临时停调度、让本次
-// 请求换号（没别的号就 503），猎到新票立即放回。用户定的口径：缺票的模型绝不在本账号上裸奔；
-// 撞了小时上限就等下一窗接着猎；一直猎不到就一直报错，不设安全阀。
-//
-// 停的单位是模型不是账号（2026-09-19 用户指出账号级会让 sol 缺票连坐有票的 astra）：借
-// extra.model_rate_limits[<model>] 这条现成的模型级限流——调度资格检查按请求模型读它，Redis
-// 调度快照也带这个键，SetModelRateLimit 是一条原子 UPDATE 并同步刷快照。停多长是一个空闲窗口
-// （idle_minutes），到期**不续期**：窗口内该模型的请求到不了本账号；到期后下一条请求还缺票就
-// 再停一次（照样换号/503）。有人用就一直处于「停着 → 到期 → 再停」的循环，效果等于一直停；
-// 没人再用的模型（terra 偶尔一次）到期后自然结束，猎手也不再为它烧额度。被任何路径（人工恢复
-// 状态、额度自动重置、账号测试成功——都走 ClearModelRateLimits 整键删；token 刷新只清账号级临时
-// 停调度，碰不到它）清掉都无害——下一条请求会重新拉起，所以那些路径不用绕开它。
-// 唯一的代价：自动模式的「曾被停过」记忆也在这条条目里（openAITurnStateHuntedModel），清掉再叠
-// 一次重启，该模型会裸奔一条请求（下一次铸造就重新记住），有界，不另存一份。
+// 保留历史 model_rate_limits 中 turn-state 暂停记录的读取、恢复和错误分类。
+// 真实请求不再因缺票设置暂停；这里不包含旧的注入点拦截写入逻辑。
 const (
 	// openAITurnStateHoldLimitReason 是 model_rate_limits 条目的 reason，猎手据此认出自己停的。
 	openAITurnStateHoldLimitReason = OpenAITurnStateHoldSelectionReason
-	// openAITurnStateHoldDefaultTTL 空闲门槛关掉（idle_minutes<=0）时的暂停时长。
-	openAITurnStateHoldDefaultTTL = time.Hour
 	// ctxKeyTurnStateHold 记本次请求因缺票被拦下的模型；出站构造完请求头后据此换号。
 	ctxKeyTurnStateHold = "openai_turn_state_hold"
 )
@@ -50,15 +36,6 @@ func (s *OpenAIGatewayService) openAITurnStateHoldEnabled(a *Account, model stri
 	}
 	cfg, _ := readOpenAITurnStateHunterConfig(a)
 	return cfg.HoldWhenDegraded
-}
-
-// openAITurnStateHoldTTL 暂停时长 = 空闲窗口：与猎手「多久没流量就不猎」同一个尺度，
-// 没人再请求的模型在同一个窗口里同时失去暂停和猎手。
-func openAITurnStateHoldTTL(cfg openAITurnStateHunterConfig) time.Duration {
-	if cfg.IdleMinutes > 0 {
-		return time.Duration(cfg.IdleMinutes) * time.Minute
-	}
-	return openAITurnStateHoldDefaultTTL
 }
 
 // openAITurnStateHoldResetAt 读 model_rate_limits 里本功能写的那条：不是本功能写的返回 false。
@@ -109,41 +86,6 @@ func openAITurnStateHeldModels(a *Account, now time.Time) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// holdOpenAITurnStateIfUnfilled 在注入点池里拿不出票时调用：猎手管这个模型且开了暂停，
-// 客户端自己回带的又不是本账号新鲜的 292，就停这个模型并标记本次换号。
-//
-// 回带判定读客户端原始头而不是出站头：出站头此时已被 guardOpenAICodexTurnStateEcho
-// 剥过异账号 blob，这里用同一个「谁铸的」判据补回那道闸。回带的票信封解不出铸造戳
-// 就按不新鲜处理——判不了寿命的票不能当放行依据。探测上下文不拦：探测本来就裸发。
-func (s *OpenAIGatewayService) holdOpenAITurnStateIfUnfilled(c *gin.Context, account *Account, model string) {
-	if s == nil || c == nil || account == nil || openAITurnStateProbeContext(c) || !s.openAITurnStateHoldEnabled(account, model) {
-		return
-	}
-	now := time.Now()
-	if c.Request != nil {
-		inbound := strings.TrimSpace(c.Request.Header.Get(openAICodexTurnStateHeader))
-		if inbound != "" && openAITurnStateHealthy(inbound) && !s.openAICodexTurnStateMintedByOther(c, account, inbound) {
-			if minted := openAITurnStateMintedAt(inbound, time.Time{}); !minted.IsZero() && now.Before(minted.Add(account.openAITurnStateStaleAfter())) {
-				return
-			}
-		}
-	}
-	c.Set(ctxKeyTurnStateHold, model)
-	// 已经停着（快照更新前的并发请求、绕过调度过滤的粘性会话）：只换号，别再各写一次库、各刷一次快照。
-	if s.accountRepo == nil || openAITurnStateModelHeld(account, model, now) {
-		return
-	}
-	cfg, _ := readOpenAITurnStateHunterConfig(account)
-	resetAt := now.Add(openAITurnStateHoldTTL(cfg))
-	if err := s.accountRepo.SetModelRateLimit(turnStateOpCtx(c), account.ID, model, resetAt, openAITurnStateHoldLimitReason); err != nil {
-		logOpenAITurnStateAuto("account=%d model=%s hold scheduling failed: %v", account.ID, model, err)
-		return
-	}
-	// 请求手里的快照同步：同一快照上的并发请求走上面的短路。
-	setAccountModelRateLimitSnapshot(account, model, resetAt, openAITurnStateHoldLimitReason, now)
-	logOpenAITurnStateAuto("account=%d model=%s no usable ticket, model held until %s or until hunter finds one", account.ID, model, resetAt.UTC().Format(time.RFC3339))
 }
 
 // openAITurnStateHoldError 把注入点的拦截变成换号错误：本账号排除、下一个账号继续；

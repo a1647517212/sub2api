@@ -1192,16 +1192,16 @@ func TestOpenAITurnStateInjectsEverySessionWhenHunterEnabled(t *testing.T) {
 	blob := turnStateFernetBlob(time.Now(), openAIHealthyTurnStateBlocks)
 	gw.pushOpenAITurnStateCandidate(turnStateAutoCtxModel("seed", hunterTestModel), account, blob)
 
-	got, source := gw.resolveOpenAITurnStateOverride(turnStateAutoCtxModel("fresh-session", hunterTestModel), account)
+	got, source := outboundTurnStateForTest(gw, turnStateAutoCtxModel("fresh-session", hunterTestModel), account)
 	require.Empty(t, got, "自动接管已移除：猎手入池也不再注入真实流量")
 	require.Empty(t, source)
 
 	gw.pushOpenAITurnStateCandidate(turnStateAutoCtxModel("seed-other", "gpt-6"), account, turnStateFernetBlob(time.Now().Add(time.Second), openAIHealthyTurnStateBlocks))
-	got, _ = gw.resolveOpenAITurnStateOverride(turnStateAutoCtxModel("fresh-session-other", "gpt-6"), account)
+	got, _ = outboundTurnStateForTest(gw, turnStateAutoCtxModel("fresh-session-other", "gpt-6"), account)
 	require.Empty(t, got, "猎手不管的模型：仍要先判定降智才注")
 
 	account.Extra[openAITurnStateHunterExtraKey] = hunterConfig(map[string]any{"enabled": false})
-	got, _ = gw.resolveOpenAITurnStateOverride(turnStateAutoCtxModel("fresh-session-2", hunterTestModel), account)
+	got, _ = outboundTurnStateForTest(gw, turnStateAutoCtxModel("fresh-session-2", hunterTestModel), account)
 	require.Empty(t, got, "没开猎手：未判定的会话保持真客户端形态")
 }
 
