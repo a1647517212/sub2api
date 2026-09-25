@@ -94,7 +94,7 @@ func TestOpenAIQuotaCallKeepsOneConfigurationSnapshot(t *testing.T) {
 		account.Extra[codexAccountUserAgentExtraKey] = "codex-tui/0.153.4 (Mac OS 26.2.0; arm64) Apple_Terminal/466"
 		account.Credentials["chatgpt_account_id"] = "new-account"
 		return redirect(proxyURL)
-	})
+	}, nil)
 	_, err := svc.QueryUsage(context.Background(), account.ID)
 	require.NoError(t, err)
 	for range 2 {

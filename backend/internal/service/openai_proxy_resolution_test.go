@@ -101,7 +101,7 @@ func TestOpenAIConfiguredProxyFailureStopsBeforeNetwork(t *testing.T) {
 					func(string) (*req.Client, error) {
 						clientCalls++
 						return nil, errors.New("unexpected outbound client")
-					})
+					}, nil)
 				_, err := svc.QueryUsage(context.Background(), account.ID)
 				require.Zero(t, clientCalls, "已配置代理不可用时不得构造默认出口客户端")
 				require.ErrorContains(t, err, "proxy")

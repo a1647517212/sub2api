@@ -96,7 +96,8 @@ func (s *OpenAIQuotaService) referralCall(ctx context.Context, id int64, program
 	if s.referralClient == nil {
 		return OpenAIReferralCall{}, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_REFERRAL_NOT_CONFIGURED", "referral service is unavailable")
 	}
-	call, err := s.prepareUpstreamCall(ctx, id, false)
+	// 邀请走业务接口自己的客户端，这里只取凭据与出口，不建 HTTP 客户端。
+	call, err := s.prepareUpstreamCredentials(ctx, id, false)
 	if err != nil {
 		return OpenAIReferralCall{}, err
 	}
@@ -104,6 +105,8 @@ func (s *OpenAIQuotaService) referralCall(ctx context.Context, id int64, program
 	if err != nil {
 		return OpenAIReferralCall{}, infraerrors.New(http.StatusBadGateway, "OPENAI_REFERRAL_AUTH_ERROR", "failed to authenticate referral request")
 	}
+	// 邀请走 Firefox 伪装客户端，Accept 用浏览器自己的；额度面给双开账号补的 */* 不带过去。
+	delete(headers, "accept")
 	return OpenAIReferralCall{ProxyURL: call.proxyURL, Headers: headers, ProgramID: program}, nil
 }
 

@@ -63,7 +63,7 @@ func TestGetOpenAIUsage_OrdinaryOAuthUsesQuotaEndpoint(t *testing.T) {
 	svc := &AccountUsageService{
 		accountRepo: repo,
 		openAIQuotaService: NewOpenAIQuotaService(repo, nil, NewOpenAITokenProvider(repo, tokens, nil),
-			newQuotaRedirectingFactory(server)),
+			newQuotaRedirectingFactory(server), nil),
 		cache: &UsageCache{},
 	}
 	waitForPersistence := func() {

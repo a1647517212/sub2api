@@ -444,10 +444,24 @@ func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, c
 	return &payload, nil
 }
 
-// prepareUpstreamCall loads the account, validates it, obtains a fresh access
-// token via the shared TokenProvider, and resolves the chatgpt-account-id and
-// proxy URL. Centralized so QueryUsage / ResetCredit share validation.
+// prepareUpstreamCall is prepareUpstreamCredentials plus the outbound HTTP client
+// that QueryUsage / ResetCredit send with.
 func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID int64, forReset bool) (*openAIQuotaCall, error) {
+	call, err := s.prepareUpstreamCredentials(ctx, accountID, forReset)
+	if err != nil {
+		return nil, err
+	}
+	call.client, err = s.privacyClientFactory(call.proxyURL)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_CLIENT_ERROR", "failed to build upstream client: %v", err)
+	}
+	return call, nil
+}
+
+// prepareUpstreamCredentials loads the account, validates it, obtains a fresh access
+// token via the shared TokenProvider, and resolves the chatgpt-account-id and
+// proxy URL. Centralized so QueryUsage / ResetCredit / referral share validation.
+func (s *OpenAIQuotaService) prepareUpstreamCredentials(ctx context.Context, accountID int64, forReset bool) (*openAIQuotaCall, error) {
 	call, err := s.loadQuotaCallSnapshot(ctx, accountID, forReset)
 	if err != nil {
 		return nil, err
@@ -474,10 +488,6 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 		if strings.TrimSpace(call.accessToken) == "" {
 			return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_QUOTA_TOKEN_UNAVAILABLE", "access token is empty")
 		}
-	}
-	call.client, err = s.privacyClientFactory(call.proxyURL)
-	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_CLIENT_ERROR", "failed to build upstream client: %v", err)
 	}
 	return call, nil
 }
@@ -540,6 +550,10 @@ func (s *OpenAIQuotaService) loadQuotaCallSnapshot(ctx context.Context, accountI
 func (s *OpenAIQuotaService) buildCodexQuotaHeaders(call *openAIQuotaCall) (map[string]string, string, error) {
 	headers := buildCodexCommonHeaders(call.accessToken, call.chatGPTAccountID, call.fedRAMP)
 	account, forwardedRow := call.account, call.forwardedRow
+	if codexDeviceWireProfileEnabledFor(forwardedRow, account) {
+		// BackendClient 不设 Accept，出站是 reqwest 默认的 */*；未双开维持原来不带。
+		headers["accept"] = "*/*"
+	}
 	// 额度面与推理面自报同一个客户端。必须过 resolveCodexOutboundIdentity：推理面的 UA
 	// 版本段会被重建成生效版本，这里直接写账号原值的话，同一账号在 /responses 报生效版本、
 	// 在 /wham/usage 报管理员填的历史版本，两面反而对不上。

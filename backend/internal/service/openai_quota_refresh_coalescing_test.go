@@ -45,7 +45,7 @@ func TestOpenAIQuotaSharedUsageDoesNotMergeWorkspaceSiblings(t *testing.T) {
 		defer server.Close()
 		repo := &sparkShadowUsageTestRepo{accounts: accounts}
 		quota := NewOpenAIQuotaService(repo, nil, NewOpenAITokenProvider(repo, nil, nil),
-			newQuotaRedirectingFactory(server))
+			newQuotaRedirectingFactory(server), nil)
 		seen := make([]string, 0, len(rows))
 		for _, row := range rows {
 			usage, err := quota.QueryUsageOnly(context.Background(), row.ID, false)
@@ -112,7 +112,7 @@ func TestOpenAIQuotaRefreshSharesCredentialSource(t *testing.T) {
 			quota := NewOpenAIQuotaService(repo, nil, NewOpenAITokenProvider(repo, nil, nil), func(proxyURL string) (*req.Client, error) {
 				factoryCalls.Add(1)
 				return redirect(proxyURL)
-			})
+			}, nil)
 			service := &AccountUsageService{accountRepo: repo, openAIQuotaService: quota, cache: &UsageCache{}}
 			type answer struct {
 				usage *UsageInfo
@@ -189,7 +189,7 @@ func TestOpenAIQuotaSharedUsageKeepsPerRowDetailsAndTimezone(t *testing.T) {
 	quota := NewOpenAIQuotaService(repo, nil, NewOpenAITokenProvider(repo, nil, nil), func(p string) (*req.Client, error) {
 		factoryCalls.Add(1)
 		return redirect(p)
-	})
+	}, nil)
 	done := make(chan error, 2)
 	go func() { _, err := quota.QueryUsage(context.Background(), parent.ID); done <- err }()
 	<-started
