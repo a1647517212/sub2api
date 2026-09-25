@@ -24,7 +24,7 @@ permissions:
 env:
   UPSTREAM_REPO: Wei-Shaw/sub2api
   FORK_BRANCH: zpj
-  CODEX_PINNED_COMMIT: e763730
+  CODEX_PINNED_COMMIT: b412ff32c417f855c2b2d1581b77058eed87c84b
   CODEX_IDENTITY_PATHS: >-
     codex-rs/codex-api/src/requests/headers.rs
     codex-rs/codex-api/src/endpoint/responses.rs
@@ -32,6 +32,11 @@ env:
     codex-rs/core/src/client.rs
     codex-rs/core/src/session/session.rs
     codex-rs/core/src/state/auto_compact_window.rs
+    codex-rs/codex-api/src/common.rs
+    codex-rs/core/src/turn_metadata.rs
+    codex-rs/utils/string/src/json.rs
+    codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
+    codex-rs/websocket-client/src/lib.rs
 
 jobs:
   sync:
@@ -95,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           go build ./...
-          go test -tags=unit ./internal/service -count=1 -run 'CodexFingerprintConvergence|CodexAccountIdentity|CodexFingerprint|CodexDeviceWireProfile|OAuthPassthrough|BuildOpenAIWSHeaders|SetupTokenCompat|IngressSession|CPR|OAuthOnlyGroupPredicate' 2>&1 | grep -vE '"level":"(DEBUG|INFO|WARN)"' | tail -20
+          go test -tags=unit ./internal/service -count=1 -run 'Codex|OpenAIRawRelay|OpenAITurnState|TurnState|CPR|OAuthPassthrough|BuildOpenAIWSHeaders|SetupTokenCompat|IngressSession|OAuthOnlyGroupPredicate' 2>&1 | grep -vE '"level":"(DEBUG|INFO|WARN)"' | tail -20
 
       - name: Check codex-rs identity sources for drift
         run: |

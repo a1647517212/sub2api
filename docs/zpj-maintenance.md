@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 本 fork | `https://github.com/a1647517212/sub2api` | 只在这里开发、推送、打标签、发版 |
 | 上游 | `https://github.com/Wei-Shaw/sub2api` | 只跟它的 **版本标签** `vX.Y.Z`，不跟它的 `main` 日常提交 |
-| KlN-4096 | `https://github.com/KlN-4096/sub2api` | 历史来源。`klno` 已停更，不要 fetch 后 rebase/merge 进来 |
+| KlN-4096 | `https://github.com/KlN-4096/sub2api` | 持续开发的补丁来源；只在用户明确授权后按固定提交审查、移植，不自动跟随移动分支 |
 
 本机工作区里 remote 的名字容易看反：
 
@@ -28,7 +28,7 @@ GitHub Actions 跑在本 fork 上时，它的 `origin` 就是 `a1647517212/sub2a
 
 跟上游标签 rebase 时，冲突按下面取舍。选错一侧，指纹收敛会被上游改回去。
 
-- 回合 metadata 保持本 fork 的原地改写。不要换成上游的 `json.Marshal`，那会把字符串重新编成 `\uXXXX`。
+- 回合 metadata 保持原地改写、键序和未知字段。按照 Codex `rust-v0.156.1` 的 ASCII 安全序列化，将非 ASCII 字符转为 Unicode 转义；不要整体 `json.Marshal` 重排对象或额外做 HTML 转义。
 - 上游新增的出站调用和本 fork 的 `scheduleCodexSideCalls` 都留。
 - 判定 Codex 上游继续用 `TargetsChatGPTCodexUpstream()`。函数如果多了 `model` 参数，把上游的新参数接上，不要退回旧签名。
 - 额度请求继续用 `CodexCanonicalUserAgent()`。不要采用上游的 `originator: Codex Desktop`，也不要给额度请求加 `sec-fetch-*`。
@@ -40,10 +40,33 @@ GitHub Actions 跑在本 fork 上时，它的 `origin` 就是 `a1647517212/sub2a
 ```bash
 cd backend
 go build ./...
-go test -tags=unit ./internal/service -count=1 -run 'CodexFingerprintConvergence|CodexAccountIdentity|CodexFingerprint|CodexDeviceWireProfile|OAuthPassthrough|BuildOpenAIWSHeaders|SetupTokenCompat|IngressSession|CPR|OAuthOnlyGroupPredicate'
+go test -tags=unit ./internal/service -count=1 -run 'Codex|OpenAIRawRelay|OpenAITurnState|TurnState|CPR|OAuthPassthrough|BuildOpenAIWSHeaders|SetupTokenCompat|IngressSession|OAuthOnlyGroupPredicate'
 ```
 
-另外会对照 `openai/codex` 的 `e763730`，检查 `sync-upstream.yml` 里 `CODEX_IDENTITY_PATHS` 那些文件有没有变。变了就失败、不发版。确认指纹逻辑仍然对齐之后，再把 workflow 里的 `CODEX_PINNED_COMMIT` 改成新的短 SHA。
+另外会对照 `openai/codex` 的 `b412ff32c417f855c2b2d1581b77058eed87c84b`（`rust-v0.156.1`），检查 `sync-upstream.yml` 里 `CODEX_IDENTITY_PATHS` 那些文件有没有变。变了就失败、不发版。确认指纹逻辑仍然对齐之后，再把 workflow 里的 `CODEX_PINNED_COMMIT` 改成新的 SHA。
+
+## 固定补丁范围与协议验收
+
+本轮协议补丁固定取自 `KlN-4096/sub2api@2b21d3a14761156a2ce3a21bde41f42c36b94e33`，不代表跟随该仓库的新提交，也不引入它的升级 UI、发版地址或同步工作流。
+
+- 纳入：model 元数据对齐、官方客户端 Lite 与 call ID 保留、辅助端点头、Guardian 条件标记、ASCII 元数据、Cookie 白名单、CPR/API-key raw relay、safety-buffering 透传和记录、代理导入失败保护。
+- `reasoning.mode` 清理限定于 Codex 上游的兼容路径；没有 effort 的 `pro` 按既有兼容规则转换为 `max`，显式 effort 保留。普通 API-key 与 raw relay 不套这层客户端转换。
+- `device + codex_experimental_fingerprint_convergence` 是线协议投影开关；不会把 session/full 当成更高等级的同一开关。现有 seed 与身份派生算法保持不变。
+- 推理 Cookie 按账号、凭证身份和代理绑定/地址隔离，HTTP 与 WS 共用；只接收 ChatGPT HTTPS 主机的基础设施白名单 cookie。额度/隐私面的客户端仍按出口复用基础设施 cookie，账户登录态 cookie 不存取，换 token 不使用 cookie jar。
+- Guardian 标记只用于符合条件的 ChatGPT 请求；PAT、Agent Identity、Guardian 子会话及 reviewer 请求不自动添加，compact 不注入。此标记不代表免费额度或服务质量保证。
+- CPR 恒走 raw relay，OpenAI API-key 通过 `extra.openai_raw_relay` 选择；普通 OAuth 保留现有入口。raw relay 仍执行本地鉴权、分组策略、计费和必要的逐跳/凭据头过滤。
+- 永不恢复 `openai_turn_state_auto` / `openai_turn_state_override` 注入与缺票拦截；跨凭证域 turn-state 守卫和已有猎手观测保留。
+
+每次修改这些契约，除单测外还要单独执行真实本地网络验收：
+
+```bash
+cd backend
+go test -tags=unit ./internal/service -count=1 -v -run '^TestCodexLocalWire|^TestOpenAIRawRelay'
+```
+
+`TestCodexLocalWire*` 通过真实 TCP/WS 连接送到本地接收端，从接收端检查报文；只将拨号地址固定为回环地址，不访问真实上游。覆盖 HTTP 普通/透传、WS 透传/连接池、开关两态、zstd、Cookie、凭证切换及禁止注入。raw relay 用例覆盖真实 HTTP/WS 多轮、策略改写、错误和取消。
+
+本地网络验证只能证明线协议与本地响应处理。真实上游必须用明确用于验收的账号/代理另做 HTTP、WS 请求，分别记录握手、终态和用量；不得用单测或本地接收成功替代。凭据由安全输入或 vault 注入，不写到仓库或证据日志。
 
 ## 日常改代码
 
@@ -102,7 +125,7 @@ git rebase --onto v0.2.9 "$base" zpj   # 把 v0.2.9 换成这次的上游标签
 ```bash
 git rebase --continue
 cd backend && go build ./...
-go test -tags=unit ./internal/service -count=1 -run 'CodexFingerprintConvergence|CodexAccountIdentity|CodexFingerprint|CodexDeviceWireProfile|OAuthPassthrough|BuildOpenAIWSHeaders|SetupTokenCompat|IngressSession|CPR|OAuthOnlyGroupPredicate'
+go test -tags=unit ./internal/service -count=1 -run 'Codex|OpenAIRawRelay|OpenAITurnState|TurnState|CPR|OAuthPassthrough|BuildOpenAIWSHeaders|SetupTokenCompat|IngressSession|OAuthOnlyGroupPredicate'
 git push --force-with-lease mine zpj
 ```
 
