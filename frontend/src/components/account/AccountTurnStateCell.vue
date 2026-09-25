@@ -1,22 +1,13 @@
 <template>
   <div v-if="isCodexAccount" class="mt-1 space-y-1" data-testid="account-turn-state-cell">
-    <!-- 没有票也要占位：整块消失时，「没开接管」「开了但池空」「票全过期了」在页面上
-         长得一模一样，运维只能靠猜。非 Codex 上游的账号根本没有这个头，那才是真该
-         整块消失的情况。
-         占位必须带上「Turn-State」这几个字：它挤在额度列下方，一个裸的 - 谁也认不出
-         是什么，等于没显示。
-         接管开着却拿不出票是另一回事（starved），要用告警色单独说——那是正在裸奔，
-         而且此时观测行多半还在（后端对所有 Codex 账号采集形态），所以它不能只在
-         「一行都没有」时才出现，否则最该报警的场景恰好被观测行挡住。 -->
+    <!-- 自动接管已移除；没有观测时仅显示占位，不再根据候选池报缺票告警。 -->
     <p
-      v-if="starved || !entries.length"
-      class="text-[10px]"
-      :class="starved ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400'"
-      :data-starved="starved ? 'true' : 'false'"
-      :role="starved ? 'status' : undefined"
+      v-if="!entries.length"
+      class="text-[10px] text-gray-400"
+      data-starved="false"
       data-testid="account-turn-state-empty"
     >
-      {{ emptyLabel }}
+      {{ t('admin.accounts.openai.turnStatePool.empty') }}
     </p>
     <!-- key 必须带上 active：同一个模型现在可能同时有「手填」和「最近铸出」两行，
          只用 model 会撞 key，Vue 会告警并错误复用节点。 -->
@@ -142,14 +133,6 @@ const { t } = useI18n()
 // 与 AccountStatusIndicator 用同一个 ticker：那边原来是裸 new Date()，不会重算，
 // 暂停到期后两处会各说各话（见 useNowTicker 的注释）。
 const sharedNow = useNowTicker()
-
-interface PoolCandidate {
-  blob?: string
-  model?: string
-  minted_at?: string
-  failed?: boolean
-  fail_streak?: number
-}
 
 /**
  * openai_turn_state_observed：账号最近一次**自然铸造**（本次没注入）的形态。
