@@ -52,6 +52,7 @@ go test -tags=unit ./internal/service -count=1 -run 'Codex|OpenAIRawRelay|OpenAI
 - 纳入：model 元数据对齐、官方客户端 Lite 与 call ID 保留、辅助端点头、Guardian 条件标记、ASCII 元数据、Cookie 白名单、CPR/API-key raw relay、safety-buffering 透传和记录、代理导入失败保护。
 - `reasoning.mode` 清理限定于 Codex 上游的兼容路径；没有 effort 的 `pro` 按既有兼容规则转换为 `max`，显式 effort 保留。普通 API-key 与 raw relay 不套这层客户端转换。
 - `device + codex_experimental_fingerprint_convergence` 是线协议投影开关；不会把 session/full 当成更高等级的同一开关。现有 seed 与身份派生算法保持不变。
+- 添加账号表单：OpenAI OAuth 类账号默认 `device` 并勾选实验性收敛；OpenAI OAuth/API-key 的 WS mode 默认 `ctx_pool`。创建请求显式保存选择，管理员仍可关闭；此规则不改变后端缺省值或编辑已有账号的读取规则。
 - 推理 Cookie 按账号、凭证身份和代理绑定/地址隔离，HTTP 与 WS 共用；只接收 ChatGPT HTTPS 主机的基础设施白名单 cookie。额度/隐私面的客户端仍按出口复用基础设施 cookie，账户登录态 cookie 不存取，换 token 不使用 cookie jar。
 - Guardian 标记只用于符合条件的 ChatGPT 请求；PAT、Agent Identity、Guardian 子会话及 reviewer 请求不自动添加，compact 不注入。此标记不代表免费额度或服务质量保证。
 - CPR 恒走 raw relay，OpenAI API-key 通过 `extra.openai_raw_relay` 选择；普通 OAuth 保留现有入口。raw relay 仍执行本地鉴权、分组策略、计费和必要的逐跳/凭据头过滤。

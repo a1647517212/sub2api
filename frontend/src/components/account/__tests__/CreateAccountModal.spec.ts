@@ -214,6 +214,79 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it.each(['session', 'pat'])('creates Codex %s imports with device convergence and context-pool defaults', async (kind) => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="create-codex-fingerprint-convergence"]').element.checked).toBe(true)
+    expect(wrapper.getComponent('[data-testid="create-codex-fingerprint-mode-select"]').props('modelValue')).toBe('device')
+    expect(wrapper.get('[data-testid="create-openai-ws-mode"]').getComponent({ name: 'Select' }).props('modelValue')).toBe('ctx_pool')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Codex defaults')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get(`[data-testid="import-codex-${kind}"]`).trigger('click')
+    await flushPromises()
+    const create = kind === 'session' ? importCodexSessionMock : createOpenAICodexPATMock
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(create.mock.calls[0]?.[0]?.extra).toMatchObject({
+      codex_fingerprint_mode: 'device',
+      codex_experimental_fingerprint_convergence: true,
+      openai_oauth_responses_websockets_v2_mode: 'ctx_pool',
+      openai_oauth_responses_websockets_v2_enabled: true,
+    })
+    wrapper.unmount()
+  })
+
+  it('preserves manual opt-out when creating a Codex account', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('[data-testid="create-codex-fingerprint-convergence"]').setValue(false)
+    wrapper.getComponent('[data-testid="create-codex-fingerprint-mode-select"]').vm.$emit('update:modelValue', 'off')
+    wrapper.get('[data-testid="create-openai-ws-mode"]').getComponent({ name: 'Select' }).vm.$emit('update:modelValue', 'off')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Codex opt-out')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+    const extra = importCodexSessionMock.mock.calls[0]?.[0]?.extra
+    expect(extra).not.toHaveProperty('codex_fingerprint_mode')
+    expect(extra).not.toHaveProperty('codex_experimental_fingerprint_convergence')
+    expect(extra).toMatchObject({ openai_oauth_responses_websockets_v2_mode: 'off', openai_oauth_responses_websockets_v2_enabled: false })
+    wrapper.unmount()
+  })
+
+  it('defaults API-key WS to context pool without writing OAuth fingerprint settings', async () => {
+    const wrapper = await submitApiKeyAccount('openai')
+    const extra = createAccountMock.mock.calls[0]?.[0]?.extra
+    expect(extra).toMatchObject({ openai_apikey_responses_websockets_v2_mode: 'ctx_pool', openai_apikey_responses_websockets_v2_enabled: true })
+    expect(extra).not.toHaveProperty('codex_fingerprint_mode')
+    expect(extra).not.toHaveProperty('codex_experimental_fingerprint_convergence')
+    wrapper.unmount()
+  })
+
+  it('restores creation defaults after switching platforms and reopening the modal', async () => {
+    const wrapper = mountModal()
+    const expectDefaults = () => {
+      expect(wrapper.get<HTMLInputElement>('[data-testid="create-codex-fingerprint-convergence"]').element.checked).toBe(true)
+      expect(wrapper.getComponent('[data-testid="create-codex-fingerprint-mode-select"]').props('modelValue')).toBe('device')
+      expect(wrapper.get('[data-testid="create-openai-ws-mode"]').getComponent({ name: 'Select' }).props('modelValue')).toBe('ctx_pool')
+    }
+    const optOut = async () => {
+      await wrapper.get('[data-testid="create-codex-fingerprint-convergence"]').setValue(false)
+      wrapper.getComponent('[data-testid="create-codex-fingerprint-mode-select"]').vm.$emit('update:modelValue', 'off')
+      wrapper.get('[data-testid="create-openai-ws-mode"]').getComponent({ name: 'Select' }).vm.$emit('update:modelValue', 'off')
+      await flushPromises()
+    }
+    await selectButtonByText(wrapper, 'OpenAI')
+    await optOut()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'OpenAI')
+    expectDefaults()
+    await optOut()
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    await selectButtonByText(wrapper, 'OpenAI')
+    expectDefaults()
+    wrapper.unmount()
+  })
+
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-01-31T12:34:00'))
